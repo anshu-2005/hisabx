@@ -1,0 +1,22 @@
+{
+  "name": "hisabx",
+  "version": "1.0.0",
+  "description": "Production-Grade Personal Finance Management with UPI Auto-Sync & Daily Calendar",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [
+    "finance",
+    "money-tracker",
+    "hisabx",
+    "upi",
+    "gpay",
+    "phonepe",
+    "budget",
+    "calendar"
+  ],
+  "author": "HisabX",
+  "license": "MIT"
+}

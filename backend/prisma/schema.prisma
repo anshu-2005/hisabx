@@ -1,0 +1,347 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum AccountType {
+  CASH
+  BANK
+  UPI_WALLET
+  SAVINGS
+  CREDIT_CARD
+  INVESTMENT
+  OTHER
+}
+
+enum TransactionType {
+  INCOME
+  EXPENSE
+  TRANSFER
+  MONEY_LENT
+  MONEY_BORROWED
+  LOAN_REPAYMENT_GIVEN
+  LOAN_REPAYMENT_RECEIVED
+  REFUND
+  ADJUSTMENT
+}
+
+enum TransactionStatus {
+  COMPLETED
+  PENDING
+  CANCELLED
+}
+
+enum PaymentMethod {
+  UPI
+  CASH
+  NET_BANKING
+  DEBIT_CARD
+  CREDIT_CARD
+  CHEQUE
+  BANK_TRANSFER
+}
+
+enum DebtType {
+  LENT
+  BORROWED
+}
+
+enum DebtStatus {
+  ACTIVE
+  PARTIALLY_PAID
+  SETTLED
+  OVERDUE
+}
+
+enum RecurrenceFrequency {
+  DAILY
+  WEEKLY
+  MONTHLY
+  YEARLY
+  CUSTOM
+}
+
+enum ReminderStatus {
+  PENDING
+  COMPLETED
+  OVERDUE
+  DISMISSED
+}
+
+model User {
+  id                    String                 @id @default(uuid())
+  email                 String                 @unique
+  passwordHash          String
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  profile               UserProfile?
+  accounts              Account[]
+  categories            TransactionCategory[]
+  transactions          Transaction[]
+  people                Person[]
+  debts                 Debt[]
+  debtRepayments        DebtRepayment[]
+  budgets               Budget[]
+  recurringTransactions RecurringTransaction[]
+  reminders             Reminder[]
+  auditLogs             AuditLog[]
+
+  @@map("users")
+}
+
+model UserProfile {
+  id              String   @id @default(uuid())
+  userId          String   @unique
+  fullName        String
+  phone           String?
+  currency        String   @default("INR")
+  currencySymbol  String   @default("₹")
+  timezone        String   @default("Asia/Kolkata")
+  theme           String   @default("system")
+  enableBiometrics Boolean @default(false)
+  updatedAt       DateTime @updatedAt
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_profiles")
+}
+
+model Account {
+  id                    String        @id @default(uuid())
+  userId                String
+  name                  String
+  type                  AccountType   @default(BANK)
+  openingBalance        Decimal       @db.Decimal(14, 2) @default(0.00)
+  currentBalance        Decimal       @db.Decimal(14, 2) @default(0.00)
+  nickname              String?
+  color                 String?       @default("#1E3A8A")
+  icon                  String?       @default("Wallet")
+  isActive              Boolean       @default(true)
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+  user                  User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceTransactions    Transaction[] @relation("SourceAccount")
+  destTransactions      Transaction[] @relation("DestAccount")
+  debtRepayments        DebtRepayment[]
+  recurringTransactions RecurringTransaction[]
+  reminders             Reminder[]
+
+  @@index([userId, isActive])
+  @@map("accounts")
+}
+
+model TransactionCategory {
+  id                    String                 @id @default(uuid())
+  userId                String?
+  name                  String
+  type                  String                 // "INCOME" | "EXPENSE"
+  icon                  String                 @default("Tag")
+  color                 String                 @default("#6B7280")
+  isCustom              Boolean                @default(false)
+  parentId              String?
+  createdAt             DateTime               @default(now())
+  user                  User?                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions          Transaction[]
+  budgets               Budget[]
+  recurringTransactions RecurringTransaction[]
+
+  @@unique([userId, name, type])
+  @@index([userId, type])
+  @@map("transaction_categories")
+}
+
+model Transaction {
+  id                   String            @id @default(uuid())
+  userId               String
+  transactionType      TransactionType
+  amount               Decimal           @db.Decimal(14, 2)
+  date                 DateTime          @db.Date
+  time                 String?           // e.g. "14:30"
+  status               TransactionStatus @default(COMPLETED)
+  categoryId           String?
+  paymentMethod        PaymentMethod     @default(UPI)
+  sourceAccountId      String?
+  destinationAccountId String?
+  personId             String?
+  merchant             String?
+  description          String
+  notes                String?
+  tags                 String[]          @default([])
+  referenceNumber      String?
+  receiptUrl           String?
+  isExcludedFromBudget Boolean           @default(false)
+  linkedTransactionId  String?
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+
+  user                 User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category             TransactionCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  sourceAccount        Account?          @relation("SourceAccount", fields: [sourceAccountId], references: [id], onDelete: Restrict)
+  destinationAccount   Account?          @relation("DestAccount", fields: [destinationAccountId], references: [id], onDelete: Restrict)
+  person               Person?           @relation(fields: [personId], references: [id], onDelete: SetNull)
+  debts                Debt[]
+  debtRepayments       DebtRepayment[]
+
+  @@index([userId, date])
+  @@index([userId, transactionType])
+  @@index([userId, status])
+  @@index([sourceAccountId])
+  @@index([destinationAccountId])
+  @@map("transactions")
+}
+
+model Person {
+  id             String          @id @default(uuid())
+  userId         String
+  name           String
+  nickname       String?
+  phone          String?
+  notes          String?
+  totalLent      Decimal         @db.Decimal(14, 2) @default(0.00)
+  totalBorrowed  Decimal         @db.Decimal(14, 2) @default(0.00)
+  totalRepaid    Decimal         @db.Decimal(14, 2) @default(0.00)
+  remainingBalance Decimal       @db.Decimal(14, 2) @default(0.00) // Positive = owes user, Negative = user owes
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions   Transaction[]
+  debts          Debt[]
+  reminders      Reminder[]
+
+  @@unique([userId, name])
+  @@index([userId])
+  @@map("people")
+}
+
+model Debt {
+  id              String          @id @default(uuid())
+  userId          String
+  personId        String
+  type            DebtType
+  initialAmount   Decimal         @db.Decimal(14, 2)
+  remainingAmount Decimal         @db.Decimal(14, 2)
+  reason          String?
+  dueDate         DateTime?       @db.Date
+  status          DebtStatus      @default(ACTIVE)
+  transactionId   String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  person          Person          @relation(fields: [personId], references: [id], onDelete: Cascade)
+  transaction     Transaction?    @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+  repayments      DebtRepayment[]
+
+  @@index([userId, personId])
+  @@index([userId, status])
+  @@map("debts")
+}
+
+model DebtRepayment {
+  id            String        @id @default(uuid())
+  userId        String
+  debtId        String
+  amount        Decimal       @db.Decimal(14, 2)
+  repaymentDate DateTime      @db.Date
+  paymentMethod PaymentMethod @default(UPI)
+  accountId     String?
+  transactionId String?
+  notes         String?
+  createdAt     DateTime      @default(now())
+
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  debt          Debt          @relation(fields: [debtId], references: [id], onDelete: Cascade)
+  account       Account?      @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  transaction   Transaction?  @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+
+  @@index([userId, debtId])
+  @@map("debt_repayments")
+}
+
+model Budget {
+  id              String              @id @default(uuid())
+  userId          String
+  categoryId      String
+  month           Int                 // 1 - 12
+  year            Int                 // e.g. 2026
+  amount          Decimal             @db.Decimal(14, 2)
+  alertThreshold  Decimal             @db.Decimal(5, 2) @default(80.00) // %
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  user            User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category        TransactionCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, categoryId, month, year])
+  @@index([userId, month, year])
+  @@map("budgets")
+}
+
+model RecurringTransaction {
+  id           String              @id @default(uuid())
+  userId       String
+  title        String
+  type         TransactionType
+  amount       Decimal             @db.Decimal(14, 2)
+  frequency    RecurrenceFrequency @default(MONTHLY)
+  startDate    DateTime            @db.Date
+  nextDueDate  DateTime            @db.Date
+  lastRunDate  DateTime?           @db.Date
+  accountId    String?
+  categoryId   String?
+  personId     String?
+  autoCreate   Boolean             @default(false)
+  isActive     Boolean             @default(true)
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account      Account?            @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  category     TransactionCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  @@index([userId, isActive, nextDueDate])
+  @@map("recurring_transactions")
+}
+
+model Reminder {
+  id                   String         @id @default(uuid())
+  userId               String
+  title                String
+  amount               Decimal?       @db.Decimal(14, 2)
+  dueDate              DateTime       @db.Date
+  status               ReminderStatus @default(PENDING)
+  relatedAccountId     String?
+  relatedPersonId      String?
+  notes                String?
+  isNotificationEnabled Boolean       @default(true)
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+
+  user                 User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  relatedAccount       Account?       @relation(fields: [relatedAccountId], references: [id], onDelete: SetNull)
+  relatedPerson        Person?        @relation(fields: [relatedPersonId], references: [id], onDelete: SetNull)
+
+  @@index([userId, dueDate, status])
+  @@map("reminders")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String
+  entityType String   // "TRANSACTION", "ACCOUNT", "DEBT"
+  entityId   String
+  action     String   // "CREATE", "UPDATE", "DELETE", "REVERSE", "STATUS_CHANGE"
+  oldState   Json?
+  newState   Json?
+  reason     String?
+  createdAt  DateTime @default(now())
+
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, entityType, entityId])
+  @@map("audit_logs")
+}

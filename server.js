@@ -1,7 +1,31 @@
+/**
+ * HisabX — Production Personal Finance Server
+ *
+ * Upgraded with:
+ * 1. Secure Authentication (Register, Login, Me, Logout, Password Reset)
+ * 2. Multi-Tenant User Data Isolation & Persistence (ACID database store)
+ * 3. Enhanced UPI Webhook Integration with User Account Attribution & Token Security
+ * 4. Rate Limiting on Authentication Endpoints
+ * 5. Full Backward Compatibility with Existing Frontend & Test Suites
+ * 6. Vercel Serverless Deployment Ready
+ */
+require('dotenv').config();
+
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const urlModule = require('url');
+
+const { db } = require('./database');
+const {
+  registerUser,
+  loginUser,
+  authenticateJwtToken,
+  logoutUser,
+  requestPasswordReset,
+  completePasswordReset
+} = require('./authService');
 
 const PORT = process.env.PORT || 3000;
 const HTML_FILE = path.join(__dirname, 'hisabx_app.html');
@@ -9,7 +33,7 @@ const DATA_DIR = path.join(__dirname, 'data');
 const LEDGER_FILE = path.join(DATA_DIR, 'webhook_transactions.json');
 const MAX_PAYLOAD_SIZE = 64 * 1024; // 64 KB
 
-// Webhook Secret from Environment Variable
+// Webhook Secret from Environment Variable (Fallback / Single-User Mode)
 const WEBHOOK_SECRET = process.env.UPI_WEBHOOK_SECRET || process.env.HISABX_WEBHOOK_SECRET || '';
 
 // Ensure data directory exists
@@ -21,7 +45,23 @@ if (!fs.existsSync(DATA_DIR)) {
   }
 }
 
-// Durable Server-Side Store Functions
+// In-Memory Rate Limiting for Auth Endpoints (Max 15 attempts per IP per minute)
+const rateLimitMap = new Map();
+function checkRateLimit(ip, limit = 15, windowMs = 60000) {
+  const now = Date.now();
+  const record = rateLimitMap.get(ip) || { count: 0, resetAt: now + windowMs };
+  if (now > record.resetAt) {
+    record.count = 1;
+    record.resetAt = now + windowMs;
+    rateLimitMap.set(ip, record);
+    return true;
+  }
+  record.count++;
+  rateLimitMap.set(ip, record);
+  return record.count <= limit;
+}
+
+// Durable Server-Side Store Functions (for global webhook compatibility)
 function loadWebhookLedger() {
   try {
     if (!fs.existsSync(LEDGER_FILE)) {
@@ -62,43 +102,11 @@ function maskString(str, visibleChars = 4) {
 function safeLog(level, message, meta = {}) {
   const ts = new Date().toISOString();
   const safeMeta = { ...meta };
-  // Redact any sensitive keys
   ['secret', 'otp', 'token', 'password', 'key', 'authorization'].forEach(k => {
     if (safeMeta[k]) safeMeta[k] = '[REDACTED]';
   });
   const metaStr = Object.keys(safeMeta).length ? ' ' + JSON.stringify(safeMeta) : '';
   console.log(`[${ts}] [${level.toUpperCase()}] ${message}${metaStr}`);
-}
-
-// Webhook Secret Authentication Validator
-function authenticateWebhookRequest(req) {
-  if (!WEBHOOK_SECRET) {
-    // Open dev mode if secret not configured in environment
-    return { authenticated: true, warning: 'UPI_WEBHOOK_SECRET not set in environment (open dev mode)' };
-  }
-
-  const rawHeader = req.headers['x-webhook-secret'] || req.headers['authorization'] || '';
-  let providedToken = rawHeader.trim();
-  if (providedToken.toLowerCase().startsWith('bearer ')) {
-    providedToken = providedToken.slice(7).trim();
-  }
-
-  if (!providedToken) {
-    return { authenticated: false, reason: 'Missing webhook secret header' };
-  }
-
-  // Constant-time comparison to prevent timing attacks
-  try {
-    const expectedBuf = Buffer.from(WEBHOOK_SECRET, 'utf8');
-    const providedBuf = Buffer.from(providedToken, 'utf8');
-    if (expectedBuf.length !== providedBuf.length) {
-      return { authenticated: false, reason: 'Invalid webhook secret' };
-    }
-    const isMatch = crypto.timingSafeEqual(expectedBuf, providedBuf);
-    return { authenticated: isMatch, reason: isMatch ? null : 'Invalid webhook secret' };
-  } catch (e) {
-    return { authenticated: false, reason: 'Authentication verification failed' };
-  }
 }
 
 // Categories Keyword Dictionary
@@ -139,7 +147,6 @@ function parseBankSms(smsBody, sender, timestamp) {
   }
 
   // 2. Extract Monetary Amount
-  // Matches "Rs. 450", "INR 1,450.00", "₹ 500", "450.00 INR", "Rs450"
   const amtMatch = raw.match(/(?:rs\.?|inr|₹)\s*([\d,]+(?:\.\d{1,2})?)/i) || 
                    raw.match(/([\d,]+(?:\.\d{1,2})?)\s*(?:rs\.?|inr|₹)/i);
   if (!amtMatch) {
@@ -163,9 +170,8 @@ function parseBankSms(smsBody, sender, timestamp) {
   const transactionType = isCredit ? 'INCOME' : 'EXPENSE';
 
   // 4. Extract UPI Reference Number (UTR / RRN / Txn ID)
-  // Example matches: "UPI Ref 498218901234", "Ref: 9382103948", "UTR: 482910482910", "Txn ID: 294819284918"
   let referenceNumber = null;
-  const refMatch = raw.match(/(?:upi\s*ref(?:\s*no)?|ref(?:\s*no)?|txn\s*(?:id|no)|utr|rrn)[\s:]*([A-Za-z0-9]{6,25})/i);
+  const refMatch = raw.match(/(?:upi\s*ref(?:\s*no)?|ref(?:\s*no)?|txn\s*(?:id|no)|utr|rrn)[\s:]*([A-Za-z0-9_-]{6,35})/i);
   if (refMatch) {
     referenceNumber = refMatch[1].trim();
   }
@@ -212,7 +218,6 @@ function parseBankSms(smsBody, sender, timestamp) {
     }
   }
 
-  // Check if SMS mentions a specific date (e.g. 23-10-2026 or 23-Oct-26)
   const dateMatch = raw.match(/(\d{1,2})[-/](\d{1,2}|[A-Za-z]{3})[-/](\d{2,4})/);
   if (dateMatch) {
     try {
@@ -266,11 +271,106 @@ function parseBankSms(smsBody, sender, timestamp) {
   };
 }
 
-// HTTP Server
-const server = http.createServer((req, res) => {
-  // CORS Headers
+// Multi-Tenant Webhook Authenticator (Supports User Webhook Token & Global Secret)
+function authenticateWebhookRequest(req, parsedUrl) {
+  // 1. Check for User-Specific Webhook Token in Query Parameter (?token=whsec_...)
+  const queryToken = (parsedUrl.query && parsedUrl.query.token) ? String(parsedUrl.query.token).trim() : '';
+  if (queryToken) {
+    const user = db.findUserByWebhookSecret(queryToken);
+    if (user) {
+      return { authenticated: true, user, authType: 'user_token' };
+    }
+    return { authenticated: false, reason: 'Invalid user webhook token' };
+  }
+
+  // 2. Check for Token in Request Headers
+  const rawHeader = req.headers['x-webhook-secret'] || req.headers['authorization'] || '';
+  let providedToken = rawHeader.trim();
+  if (providedToken.toLowerCase().startsWith('bearer ')) {
+    providedToken = providedToken.slice(7).trim();
+  }
+
+  if (providedToken) {
+    // Check if it matches a user's unique webhook secret
+    const user = db.findUserByWebhookSecret(providedToken);
+    if (user) {
+      return { authenticated: true, user, authType: 'user_token' };
+    }
+
+    // Check if it matches the global UPI_WEBHOOK_SECRET
+    if (WEBHOOK_SECRET) {
+      try {
+        const expectedBuf = Buffer.from(WEBHOOK_SECRET, 'utf8');
+        const providedBuf = Buffer.from(providedToken, 'utf8');
+        if (expectedBuf.length === providedBuf.length && crypto.timingSafeEqual(expectedBuf, providedBuf)) {
+          return { authenticated: true, user: null, authType: 'global_secret' };
+        }
+      } catch (e) {}
+    }
+
+    return { authenticated: false, reason: 'Invalid webhook secret' };
+  }
+
+  // 3. Fallback: If WEBHOOK_SECRET is not configured in env, allow open local dev mode ONLY outside production
+  if (!WEBHOOK_SECRET) {
+    if (process.env.NODE_ENV === 'production') {
+      return { authenticated: false, reason: 'Global webhook secret is unconfigured and open dev mode is disabled in production' };
+    }
+    return { authenticated: true, user: null, authType: 'dev_open' };
+  }
+
+  return { authenticated: false, reason: 'Missing webhook secret or token' };
+}
+
+// Helper to send JSON responses
+function sendJson(res, statusCode, data) {
+  res.writeHead(statusCode, {
+    'Content-Type': 'application/json',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Webhook-Secret'
+  });
+  res.end(JSON.stringify(data));
+}
+
+// Helper to read JSON request body
+function readJsonBody(req, maxSize = MAX_PAYLOAD_SIZE) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    let sizeExceeded = false;
+
+    req.on('data', chunk => {
+      body += chunk;
+      if (body.length > maxSize) {
+        sizeExceeded = true;
+        req.destroy();
+      }
+    });
+
+    req.on('end', () => {
+      if (sizeExceeded) {
+        return reject({ status: 413, message: 'Payload too large (maximum 64KB allowed)' });
+      }
+      if (!body.trim()) {
+        return resolve({});
+      }
+      try {
+        const parsed = JSON.parse(body);
+        resolve(parsed);
+      } catch (e) {
+        reject({ status: 400, message: 'Invalid JSON request payload' });
+      }
+    });
+
+    req.on('error', err => reject({ status: 500, message: err.message }));
+  });
+}
+
+// Request Handler Function
+async function requestHandler(req, res) {
+  // CORS Preflight Handling
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Webhook-Secret');
 
   if (req.method === 'OPTIONS') {
@@ -279,23 +379,234 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  const url = req.url.split('?')[0];
+  const parsedUrl = urlModule.parse(req.url, true);
+  const pathname = parsedUrl.pathname;
+  const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
+
+  // =========================================================================
+  // ROUTE: GET /api/health
+  // =========================================================================
+  if (pathname === '/api/health') {
+    return sendJson(res, 200, {
+      status: 'ok',
+      app: 'HisabX Fintech OS',
+      version: '2.0.0',
+      time: new Date().toISOString(),
+      webhookConfigured: Boolean(WEBHOOK_SECRET),
+      registeredUsersCount: db.data.users.length,
+      persistence: 'durable-acid-store'
+    });
+  }
+
+  // =========================================================================
+  // AUTHENTICATION ROUTES
+  // =========================================================================
+
+  // POST /api/auth/register
+  if (req.method === 'POST' && pathname === '/api/auth/register') {
+    if (!checkRateLimit(clientIp, 15, 60000)) {
+      return sendJson(res, 429, { status: 'error', error: 'Too many registration requests. Please wait a minute.' });
+    }
+    try {
+      const payload = await readJsonBody(req);
+      const result = await registerUser(payload);
+      if (!result.success) {
+        return sendJson(res, result.status || 400, { status: 'error', error: result.error });
+      }
+      safeLog('info', 'New user registered', { email: maskString(result.user.email, 3) });
+      return sendJson(res, 201, {
+        status: 'success',
+        message: 'Account created successfully',
+        token: result.token,
+        user: result.user
+      });
+    } catch (err) {
+      return sendJson(res, err.status || 500, { status: 'error', error: err.message });
+    }
+  }
+
+  // POST /api/auth/login
+  if (req.method === 'POST' && pathname === '/api/auth/login') {
+    if (!checkRateLimit(clientIp, 20, 60000)) {
+      return sendJson(res, 429, { status: 'error', error: 'Too many login attempts. Please wait a minute.' });
+    }
+    try {
+      const payload = await readJsonBody(req);
+      const result = await loginUser(payload);
+      if (!result.success) {
+        return sendJson(res, result.status || 401, { status: 'error', error: result.error });
+      }
+      safeLog('info', 'User logged in', { email: maskString(result.user.email, 3) });
+      return sendJson(res, 200, {
+        status: 'success',
+        message: 'Login successful',
+        token: result.token,
+        user: result.user
+      });
+    } catch (err) {
+      return sendJson(res, err.status || 500, { status: 'error', error: err.message });
+    }
+  }
+
+  // GET /api/auth/me
+  if (req.method === 'GET' && pathname === '/api/auth/me') {
+    const auth = authenticateJwtToken(req);
+    if (!auth.authenticated) {
+      return sendJson(res, 401, { status: 'error', error: auth.reason });
+    }
+    return sendJson(res, 200, { status: 'success', user: auth.user });
+  }
+
+  // POST /api/auth/logout
+  if (req.method === 'POST' && pathname === '/api/auth/logout') {
+    const auth = authenticateJwtToken(req);
+    if (auth.authenticated && auth.token) {
+      logoutUser(auth.token);
+    }
+    return sendJson(res, 200, { status: 'success', message: 'Logged out successfully' });
+  }
+
+  // POST /api/auth/forgot-password
+  if (req.method === 'POST' && pathname === '/api/auth/forgot-password') {
+    try {
+      const payload = await readJsonBody(req);
+      const result = requestPasswordReset(payload.email);
+      return sendJson(res, 200, { status: 'success', ...result });
+    } catch (err) {
+      return sendJson(res, err.status || 500, { status: 'error', error: err.message });
+    }
+  }
+
+  // POST /api/auth/reset-password
+  if (req.method === 'POST' && pathname === '/api/auth/reset-password') {
+    try {
+      const payload = await readJsonBody(req);
+      const result = await completePasswordReset(payload.token, payload.newPassword);
+      if (!result.success) {
+        return sendJson(res, result.status || 400, { status: 'error', error: result.error });
+      }
+      return sendJson(res, 200, { status: 'success', message: result.message });
+    } catch (err) {
+      return sendJson(res, err.status || 500, { status: 'error', error: err.message });
+    }
+  }
+
+  // =========================================================================
+  // MULTI-TENANT USER DATA ROUTES (Strictly Scoped to req.user.id)
+  // =========================================================================
+
+  // GET /api/user/data - Fetch Complete Scoped Ledger for Authenticated User
+  if (req.method === 'GET' && pathname === '/api/user/data') {
+    const auth = authenticateJwtToken(req);
+    if (!auth.authenticated) {
+      return sendJson(res, 401, { status: 'error', error: auth.reason });
+    }
+    const fullData = db.getFullUserData(auth.user.id);
+    return sendJson(res, 200, { status: 'success', data: fullData });
+  }
+
+  // POST /api/user/sync - Synchronize / Migrate LocalStorage Data to Server
+  if (req.method === 'POST' && pathname === '/api/user/sync') {
+    const auth = authenticateJwtToken(req);
+    if (!auth.authenticated) {
+      return sendJson(res, 401, { status: 'error', error: auth.reason });
+    }
+    try {
+      const payload = await readJsonBody(req);
+      const importStats = db.importUserBatchData(auth.user.id, payload);
+      const refreshedData = db.getFullUserData(auth.user.id);
+      return sendJson(res, 200, {
+        status: 'success',
+        message: 'Data synchronized to secure cloud database',
+        stats: importStats,
+        data: refreshedData
+      });
+    } catch (err) {
+      return sendJson(res, err.status || 500, { status: 'error', error: err.message });
+    }
+  }
+
+  // POST /api/user/transactions - Create or Update Transaction for Authenticated User
+  if (req.method === 'POST' && pathname === '/api/user/transactions') {
+    const auth = authenticateJwtToken(req);
+    if (!auth.authenticated) {
+      return sendJson(res, 401, { status: 'error', error: auth.reason });
+    }
+    try {
+      const payload = await readJsonBody(req);
+      if (!payload.amount || isNaN(Number(payload.amount)) || Number(payload.amount) <= 0) {
+        return sendJson(res, 400, { status: 'error', error: 'Valid monetary amount is required' });
+      }
+      if (!payload.transactionType) {
+        return sendJson(res, 400, { status: 'error', error: 'Transaction type is required' });
+      }
+
+      let tx;
+      if (payload.id && db.findTransactionById(auth.user.id, payload.id)) {
+        tx = db.updateTransaction(auth.user.id, payload.id, payload);
+      } else {
+        tx = db.createTransaction(auth.user.id, payload);
+      }
+      return sendJson(res, 201, { status: 'success', transaction: tx });
+    } catch (err) {
+      return sendJson(res, err.status || 500, { status: 'error', error: err.message });
+    }
+  }
+
+  // DELETE /api/user/transactions/:id - Delete Transaction (Strict Ownership Verification)
+  if (req.method === 'DELETE' && pathname.startsWith('/api/user/transactions/')) {
+    const auth = authenticateJwtToken(req);
+    if (!auth.authenticated) {
+      return sendJson(res, 401, { status: 'error', error: auth.reason });
+    }
+    const txId = pathname.replace('/api/user/transactions/', '').trim();
+    const deleted = db.deleteTransaction(auth.user.id, txId);
+    if (!deleted) {
+      return sendJson(res, 404, { status: 'error', error: 'Transaction not found or not owned by user' });
+    }
+    return sendJson(res, 200, { status: 'success', message: 'Transaction deleted successfully' });
+  }
+
+  // POST /api/user/debts - Save Debt
+  if (req.method === 'POST' && pathname === '/api/user/debts') {
+    const auth = authenticateJwtToken(req);
+    if (!auth.authenticated) return sendJson(res, 401, { status: 'error', error: auth.reason });
+    try {
+      const payload = await readJsonBody(req);
+      const debt = db.saveDebt(auth.user.id, payload);
+      return sendJson(res, 200, { status: 'success', debt });
+    } catch (err) {
+      return sendJson(res, err.status || 500, { status: 'error', error: err.message });
+    }
+  }
+
+  // POST /api/user/reminders - Save Reminder
+  if (req.method === 'POST' && pathname === '/api/user/reminders') {
+    const auth = authenticateJwtToken(req);
+    if (!auth.authenticated) return sendJson(res, 401, { status: 'error', error: auth.reason });
+    try {
+      const payload = await readJsonBody(req);
+      const reminder = db.saveReminder(auth.user.id, payload);
+      return sendJson(res, 200, { status: 'success', reminder });
+    } catch (err) {
+      return sendJson(res, err.status || 500, { status: 'error', error: err.message });
+    }
+  }
 
   // =========================================================================
   // ROUTE 1: POST /api/webhook/upi (or /v1/webhook/upi) - Webhook Ingestion
   // =========================================================================
-  if (req.method === 'POST' && (url === '/api/webhook/upi' || url.includes('/webhook/upi') || url === '/api/webhook')) {
+  if (req.method === 'POST' && (pathname === '/api/webhook/upi' || pathname.includes('/webhook/upi') || pathname === '/api/webhook')) {
     // 1. Authenticate Request
-    const authResult = authenticateWebhookRequest(req);
+    const authResult = authenticateWebhookRequest(req, parsedUrl);
     if (!authResult.authenticated) {
       safeLog('warn', 'Webhook unauthorized request rejected', { reason: authResult.reason });
-      res.writeHead(401, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      return sendJson(res, 401, {
         status: 'error',
         error: 'Unauthorized: Invalid or missing webhook secret',
+        reason: authResult.reason,
         code: 'UNAUTHORIZED'
-      }));
-      return;
+      });
     }
 
     // 2. Read Request Body with Strict Size Limit (64 KB)
@@ -313,13 +624,11 @@ const server = http.createServer((req, res) => {
     req.on('end', () => {
       if (sizeExceeded) {
         safeLog('warn', 'Webhook payload rejected: exceeded maximum allowed size');
-        res.writeHead(413, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
+        return sendJson(res, 413, {
           status: 'error',
           error: 'Payload too large (maximum 64KB allowed)',
           code: 'PAYLOAD_TOO_LARGE'
-        }));
-        return;
+        });
       }
 
       // 3. Parse and Validate JSON Payload
@@ -328,23 +637,19 @@ const server = http.createServer((req, res) => {
         payload = JSON.parse(body);
       } catch (err) {
         safeLog('warn', 'Webhook rejected: invalid JSON payload');
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
+        return sendJson(res, 400, {
           status: 'error',
           error: 'Invalid JSON request body. Expected format: { "sender": string, "body": string, "timestamp"?: string }',
           code: 'INVALID_JSON'
-        }));
-        return;
+        });
       }
 
       if (!payload || typeof payload !== 'object') {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
+        return sendJson(res, 400, {
           status: 'error',
           error: 'Invalid request body. Expected a JSON object.',
           code: 'BAD_REQUEST'
-        }));
-        return;
+        });
       }
 
       const smsText = payload.body || payload.text || payload.message || payload.sms;
@@ -352,13 +657,11 @@ const server = http.createServer((req, res) => {
       const timestamp = payload.timestamp || payload.date || new Date().toISOString();
 
       if (!smsText || typeof smsText !== 'string' || !smsText.trim()) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
+        return sendJson(res, 400, {
           status: 'error',
           error: 'Missing required field: "body" (SMS text string is required)',
           code: 'MISSING_BODY'
-        }));
-        return;
+        });
       }
 
       // 4. Parse Bank SMS Text
@@ -368,19 +671,38 @@ const server = http.createServer((req, res) => {
           sender: maskString(sender, 4),
           reason: parseResult.reason
         });
-        res.writeHead(422, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
+        return sendJson(res, 422, {
           status: 'rejected',
           error: 'Unrecognized or non-transactional SMS message',
           reason: parseResult.reason,
           code: 'UNRECOGNIZED_TRANSACTION'
-        }));
-        return;
+        });
       }
 
       const txData = parseResult.data;
 
       // 5. Deduplication Check against Persistent Store
+      const targetUserId = authResult.user ? authResult.user.id : null;
+
+      // Deduplication in User Scoped DB if user authenticated
+      if (targetUserId) {
+        const isUserDuplicate = db.isDuplicateTransaction(targetUserId, txData.referenceNumber, txData.dedupKey);
+        if (isUserDuplicate) {
+          safeLog('info', 'Duplicate webhook transaction detected for user', {
+            userId: targetUserId,
+            ref: maskString(txData.referenceNumber || txData.dedupKey, 6)
+          });
+          return sendJson(res, 200, {
+            status: 'duplicate',
+            message: 'Transaction already recorded for your account (duplicate ignored)',
+            referenceNumber: txData.referenceNumber,
+            dedupKey: txData.dedupKey,
+            code: 'DUPLICATE_IGNORED'
+          });
+        }
+      }
+
+      // Deduplication in Global Ledger
       const ledger = loadWebhookLedger();
       const isDuplicate = ledger.transactions.some(tx => {
         if (txData.referenceNumber && tx.referenceNumber && tx.referenceNumber === txData.referenceNumber) {
@@ -390,20 +712,18 @@ const server = http.createServer((req, res) => {
       });
 
       if (isDuplicate) {
-        safeLog('info', 'Duplicate webhook transaction detected and ignored', {
+        safeLog('info', 'Duplicate webhook transaction detected in ledger', {
           ref: maskString(txData.referenceNumber || txData.dedupKey, 6),
           amount: txData.amount,
           type: txData.transactionType
         });
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
+        return sendJson(res, 200, {
           status: 'duplicate',
           message: 'Transaction already recorded (duplicate ignored)',
           referenceNumber: txData.referenceNumber,
           dedupKey: txData.dedupKey,
           code: 'DUPLICATE_IGNORED'
-        }));
-        return;
+        });
       }
 
       // 6. Persist Transaction in Durable Store
@@ -413,41 +733,45 @@ const server = http.createServer((req, res) => {
         tags: ['UPI', 'AutoWebhook'],
         sender: maskString(sender, 8),
         createdAt: new Date().toISOString(),
-        syncedToClient: false
+        syncedToClient: false,
+        userId: targetUserId || undefined
       };
 
+      // Persist in User Database if targeted
+      if (targetUserId) {
+        db.createTransaction(targetUserId, newTransaction);
+      }
+
+      // Persist in Global Ledger file for compatibility
       ledger.transactions.unshift(newTransaction);
       const saved = saveWebhookLedger(ledger);
 
       if (!saved) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
+        return sendJson(res, 500, {
           status: 'error',
           error: 'Internal server error: Failed to persist transaction',
           code: 'STORAGE_FAILED'
-        }));
-        return;
+        });
       }
 
       safeLog('info', 'Successfully recorded UPI transaction', {
         id: newTransaction.id,
         type: newTransaction.transactionType,
         amount: newTransaction.amount,
-        ref: maskString(newTransaction.referenceNumber || newTransaction.dedupKey, 6)
+        ref: maskString(newTransaction.referenceNumber || newTransaction.dedupKey, 6),
+        userScoped: Boolean(targetUserId)
       });
 
-      res.writeHead(201, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      return sendJson(res, 201, {
         status: 'success',
         message: 'UPI transaction parsed and recorded successfully',
         transaction: newTransaction
-      }));
+      });
     });
 
     req.on('error', err => {
       safeLog('error', 'Webhook stream error', { message: err.message });
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'error', error: 'Stream error', code: 'STREAM_ERROR' }));
+      return sendJson(res, 500, { status: 'error', error: 'Stream error', code: 'STREAM_ERROR' });
     });
 
     return;
@@ -456,64 +780,53 @@ const server = http.createServer((req, res) => {
   // =========================================================================
   // ROUTE 2: GET /api/webhook/transactions - Client Sync Endpoint
   // =========================================================================
-  if (req.method === 'GET' && url === '/api/webhook/transactions') {
+  if (req.method === 'GET' && pathname === '/api/webhook/transactions') {
+    // If client provides JWT, return transactions scoped to that user
+    const auth = authenticateJwtToken(req);
+    if (auth.authenticated && auth.user) {
+      const userTransactions = db.getTransactions(auth.user.id);
+      return sendJson(res, 200, {
+        status: 'success',
+        count: userTransactions.length,
+        lastUpdated: new Date().toISOString(),
+        transactions: userTransactions
+      });
+    }
+
+    // Default: Return global ledger transactions
     const ledger = loadWebhookLedger();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+    return sendJson(res, 200, {
       status: 'success',
       count: ledger.transactions.length,
       lastUpdated: ledger.lastUpdated,
       transactions: ledger.transactions
-    }));
-    return;
+    });
   }
 
   // =========================================================================
   // ROUTE 3: POST /api/webhook/transactions/mark-synced
   // =========================================================================
-  if (req.method === 'POST' && url === '/api/webhook/transactions/mark-synced') {
-    let body = '';
-    req.on('data', chunk => { body += chunk; });
-    req.on('end', () => {
-      try {
-        const payload = JSON.parse(body || '{}');
-        const ids = Array.isArray(payload.ids) ? payload.ids : [];
-        const ledger = loadWebhookLedger();
-        let updatedCount = 0;
-        ledger.transactions.forEach(tx => {
-          if (ids.length === 0 || ids.includes(tx.id)) {
-            tx.syncedToClient = true;
-            updatedCount++;
-          }
-        });
-        saveWebhookLedger(ledger);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'success', markedCount: updatedCount }));
-      } catch (e) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'error', error: 'Invalid payload' }));
-      }
-    });
-    return;
+  if (req.method === 'POST' && pathname === '/api/webhook/transactions/mark-synced') {
+    try {
+      const payload = await readJsonBody(req);
+      const ids = Array.isArray(payload.ids) ? payload.ids : [];
+      const ledger = loadWebhookLedger();
+      let updatedCount = 0;
+      ledger.transactions.forEach(tx => {
+        if (ids.length === 0 || ids.includes(tx.id)) {
+          tx.syncedToClient = true;
+          updatedCount++;
+        }
+      });
+      saveWebhookLedger(ledger);
+      return sendJson(res, 200, { status: 'success', markedCount: updatedCount });
+    } catch (e) {
+      return sendJson(res, 400, { status: 'error', error: 'Invalid payload' });
+    }
   }
 
   // =========================================================================
-  // ROUTE 4: GET /api/health
-  // =========================================================================
-  if (url === '/api/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      status: 'ok',
-      app: 'HisabX Fintech OS',
-      version: '2.0.0',
-      time: new Date().toISOString(),
-      webhookConfigured: Boolean(WEBHOOK_SECRET)
-    }));
-    return;
-  }
-
-  // =========================================================================
-  // ROUTE 5: Serve Main Web Application (SPA)
+  // ROUTE 4: Serve Main Web Application (SPA)
   // =========================================================================
   fs.readFile(HTML_FILE, 'utf8', (err, data) => {
     if (err) {
@@ -524,16 +837,27 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(data);
   });
-});
+}
 
-server.listen(PORT, () => {
-  console.log('\n======================================================');
-  console.log('   🚀 HisabX — Production Personal Finance OS');
-  console.log('======================================================');
-  console.log(`   Local Web App   : http://localhost:${PORT}`);
-  console.log(`   Webhook API     : http://localhost:${PORT}/api/webhook/upi`);
-  console.log(`   Client Sync API : http://localhost:${PORT}/api/webhook/transactions`);
-  console.log(`   Secret Status   : ${WEBHOOK_SECRET ? 'Configured (Secured with UPI_WEBHOOK_SECRET)' : 'Not set (Open Local Dev Mode)'}`);
-  console.log('   Storage Store   : data/webhook_transactions.json');
-  console.log('======================================================\n');
-});
+// Create HTTP Server
+const server = http.createServer(requestHandler);
+
+// Start listening if executed directly
+if (require.main === module) {
+  server.listen(PORT, () => {
+    console.log('\n======================================================');
+    console.log('   🚀 HisabX — Production Personal Finance OS');
+    console.log('======================================================');
+    console.log(`   Local Web App   : http://localhost:${PORT}`);
+    console.log(`   Webhook API     : http://localhost:${PORT}/api/webhook/upi`);
+    console.log(`   Client Sync API : http://localhost:${PORT}/api/webhook/transactions`);
+    console.log(`   Auth API        : http://localhost:${PORT}/api/auth/login`);
+    console.log(`   Secret Status   : ${WEBHOOK_SECRET ? 'Configured (Secured with UPI_WEBHOOK_SECRET)' : 'Not set (Open Local Dev Mode)'}`);
+    console.log('   Storage Store   : data/hisabx_persistent_db.json');
+    console.log('======================================================\n');
+  });
+}
+
+// Export for serverless environments (Vercel)
+module.exports = server;
+module.exports.requestHandler = requestHandler;

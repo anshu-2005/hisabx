@@ -178,17 +178,17 @@
 
       <!-- Sidebar Footer -->
       <div class="p-3 border-t border-slate-100 dark:border-slate-800">
-        <div class="flex items-center justify-between p-2 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/60 dark:border-slate-700/50">
+        <div id="sidebar-user-card" onclick="handleUserCardClick()" class="flex items-center justify-between p-2 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/60 dark:border-slate-700/50 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
           <div class="flex items-center space-x-2.5 overflow-hidden">
             <div id="sidebar-user-avatar" class="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-600 to-brand-500 text-white flex items-center justify-center font-bold text-xs shrink-0 shadow-sm">
               VM
             </div>
             <div class="overflow-hidden">
-              <p id="sidebar-user-name" class="text-xs font-semibold truncate text-slate-800 dark:text-slate-100">Vikram Malhotra</p>
-              <p class="text-[11px] text-slate-400 dark:text-slate-500 truncate">₹ INR • Asia/Kolkata</p>
+              <p id="sidebar-user-name" class="text-xs font-semibold truncate text-slate-800 dark:text-slate-100">My Account</p>
+              <p id="sidebar-user-badge" class="text-[11px] text-slate-400 dark:text-slate-500 truncate">Local Mode</p>
             </div>
           </div>
-          <button onclick="toggleDarkMode()" title="Toggle Light/Dark Theme" class="p-1.5 rounded-lg text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white hover:bg-white dark:hover:bg-slate-700 transition-colors">
+          <button onclick="event.stopPropagation(); toggleDarkMode()" title="Toggle Light/Dark Theme" class="p-1.5 rounded-lg text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white hover:bg-white dark:hover:bg-slate-700 transition-colors">
             <i id="theme-toggle-icon" data-lucide="moon" class="w-4 h-4"></i>
           </button>
         </div>
@@ -251,6 +251,9 @@
           </button>
 
           <div class="h-6 w-px bg-slate-200 dark:bg-slate-700 hidden sm:block"></div>
+
+          <!-- Cloud Auth & Profile Status -->
+          <div id="header-auth-container" class="flex items-center"></div>
 
           <button onclick="toggleDarkMode()" class="p-2 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800">
             <i data-lucide="moon" class="w-4 h-4"></i>
@@ -389,6 +392,9 @@
     function saveState() {
       try {
         localStorage.setItem(DB_KEY, JSON.stringify(appState));
+        if (typeof debounceSyncToCloud === 'function' && currentAuthToken) {
+          debounceSyncToCloud();
+        }
       } catch (e) {
         console.error('Save failed', e);
       }
@@ -2525,7 +2531,11 @@
       if (isSyncingWebhook) return;
       isSyncingWebhook = true;
       try {
-        const res = await fetch('/api/webhook/transactions');
+        const reqHeaders = {};
+        if (currentAuthToken) {
+          reqHeaders['Authorization'] = `Bearer ${currentAuthToken}`;
+        }
+        const res = await fetch('/api/webhook/transactions', { headers: reqHeaders });
         if (!res.ok) {
           if (manual) showToast('Could not reach webhook server endpoint', 'error');
           return;
@@ -2598,7 +2608,8 @@
       const sync = appState.upiSync || { enabled: true, apps: {} };
       const isEnabled = sync.enabled;
       const origin = window.location.origin || 'http://localhost:3000';
-      const actualWebhookUrl = `${origin}/api/webhook/upi`;
+      const userSecret = currentAuthUser ? currentAuthUser.webhookSecret : null;
+      const actualWebhookUrl = userSecret ? `${origin}/api/webhook/upi?token=${userSecret}` : `${origin}/api/webhook/upi`;
 
       container.innerHTML = `
         <div class="space-y-6">
@@ -2681,8 +2692,11 @@
               <!-- Endpoint Display Box -->
               <div class="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
                 <div class="overflow-hidden">
-                  <span class="text-slate-400 block text-[10px] uppercase font-semibold">Local Webhook URL</span>
-                  <span class="font-mono text-indigo-600 dark:text-indigo-400 font-bold truncate block select-all">
+                  <div class="flex items-center space-x-2">
+                    <span class="text-slate-400 block text-[10px] uppercase font-semibold">Incoming Webhook URL</span>
+                    ${userSecret ? '<span class="text-[9px] px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-400 font-bold">Personal Multi-User Token Attached</span>' : '<span class="text-[9px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 font-bold">Local/Global Mode (Sign in for personal token)</span>'}
+                  </div>
+                  <span class="font-mono text-indigo-600 dark:text-indigo-400 font-bold truncate block select-all mt-1">
                     ${actualWebhookUrl}
                   </span>
                 </div>
@@ -4572,9 +4586,629 @@
       }
     });
 
+    // --- 19. SECURE AUTHENTICATION & MULTI-TENANT CLOUD SYNC ---
+    const AUTH_TOKEN_KEY = 'hisabx_auth_jwt_token';
+    let currentAuthUser = null;
+    let currentAuthToken = localStorage.getItem(AUTH_TOKEN_KEY) || null;
+    let syncDebounceTimer = null;
+
+    async function initAuth() {
+      currentAuthToken = localStorage.getItem(AUTH_TOKEN_KEY) || null;
+      if (!currentAuthToken) {
+        currentAuthUser = null;
+        renderAuthUI();
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/auth/me', {
+          headers: { 'Authorization': `Bearer ${currentAuthToken}` }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          currentAuthUser = data.user;
+          renderAuthUI();
+          await syncFromCloudServer(false);
+        } else {
+          currentAuthToken = null;
+          currentAuthUser = null;
+          localStorage.removeItem(AUTH_TOKEN_KEY);
+          renderAuthUI();
+        }
+      } catch (err) {
+        console.warn('Auth check offline or failed, continuing with cached state:', err.message);
+        renderAuthUI();
+      }
+    }
+
+    function renderAuthUI() {
+      const headerContainer = document.getElementById('header-auth-container');
+      const sidebarName = document.getElementById('sidebar-user-name');
+      const sidebarBadge = document.getElementById('sidebar-user-badge');
+      const sidebarAvatar = document.getElementById('sidebar-user-avatar');
+
+      if (currentAuthUser) {
+        const initials = currentAuthUser.fullName
+          ? currentAuthUser.fullName.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase()
+          : currentAuthUser.email.substring(0, 2).toUpperCase();
+
+        if (sidebarAvatar) sidebarAvatar.textContent = initials;
+        if (sidebarName) sidebarName.textContent = currentAuthUser.fullName || currentAuthUser.email;
+        if (sidebarBadge) {
+          sidebarBadge.textContent = 'Cloud Active';
+          sidebarBadge.className = 'text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold truncate flex items-center space-x-1';
+        }
+
+        if (headerContainer) {
+          headerContainer.innerHTML = `
+            <div class="relative">
+              <button onclick="toggleUserDropdown()" id="btn-user-profile" class="flex items-center space-x-2 px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700/80 text-xs font-semibold text-slate-800 dark:text-slate-200 transition-all border border-slate-200/60 dark:border-slate-700">
+                <span class="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.7)]"></span>
+                <span class="max-w-[110px] truncate hidden sm:inline">${currentAuthUser.fullName || currentAuthUser.email}</span>
+                <i data-lucide="chevron-down" class="w-3.5 h-3.5 text-slate-400"></i>
+              </button>
+              <div id="user-dropdown-menu" class="hidden absolute right-0 mt-2 w-72 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl p-4 z-50 space-y-3">
+                <div class="border-b border-slate-100 dark:border-slate-800 pb-3">
+                  <div class="flex items-center space-x-2.5">
+                    <div class="w-9 h-9 rounded-full bg-gradient-to-tr from-indigo-600 to-brand-600 text-white flex items-center justify-center font-bold text-xs shrink-0">
+                      ${initials}
+                    </div>
+                    <div class="overflow-hidden">
+                      <p class="font-bold text-xs text-slate-900 dark:text-white truncate">${currentAuthUser.fullName || 'User'}</p>
+                      <p class="text-[11px] text-slate-400 truncate">${currentAuthUser.email}</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="space-y-1.5 text-xs">
+                  <button onclick="openUserProfileModal()" class="w-full flex items-center space-x-2.5 px-2.5 py-2 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
+                    <i data-lucide="key-round" class="w-4 h-4 text-indigo-500"></i>
+                    <span>Webhook Secret & Account</span>
+                  </button>
+                  <button onclick="syncFromCloudServer(true)" class="w-full flex items-center space-x-2.5 px-2.5 py-2 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
+                    <i data-lucide="cloud-download" class="w-4 h-4 text-emerald-500"></i>
+                    <span>Pull Latest Cloud Data</span>
+                  </button>
+                  <button onclick="syncToCloudServer(true)" class="w-full flex items-center space-x-2.5 px-2.5 py-2 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
+                    <i data-lucide="cloud-upload" class="w-4 h-4 text-brand-500"></i>
+                    <span>Push Local Changes to Cloud</span>
+                  </button>
+                </div>
+
+                <div class="pt-2 border-t border-slate-100 dark:border-slate-800">
+                  <button onclick="handleAuthLogout()" class="w-full flex items-center space-x-2 px-2.5 py-2 rounded-xl text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 text-xs font-semibold transition-colors">
+                    <i data-lucide="log-out" class="w-4 h-4"></i>
+                    <span>Log Out</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          `;
+        }
+      } else {
+        if (sidebarAvatar) sidebarAvatar.textContent = 'HS';
+        if (sidebarName) sidebarName.textContent = 'My Account';
+        if (sidebarBadge) {
+          sidebarBadge.textContent = 'Local Mode • Sign in';
+          sidebarBadge.className = 'text-[11px] text-slate-400 dark:text-slate-500 truncate';
+        }
+
+        if (headerContainer) {
+          headerContainer.innerHTML = `
+            <button onclick="openAuthModal('login')" class="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-brand-50 hover:bg-brand-100 dark:bg-brand-950/60 dark:hover:bg-brand-900/60 text-brand-700 dark:text-brand-300 border border-brand-200/80 dark:border-brand-800 text-xs font-semibold transition-all active:scale-95 shadow-sm">
+              <i data-lucide="log-in" class="w-3.5 h-3.5"></i>
+              <span>Sign In</span>
+            </button>
+          `;
+        }
+      }
+      lucide.createIcons();
+    }
+
+    function toggleUserDropdown() {
+      const menu = document.getElementById('user-dropdown-menu');
+      if (menu) menu.classList.toggle('hidden');
+    }
+
+    window.addEventListener('click', (e) => {
+      const btn = document.getElementById('btn-user-profile');
+      const menu = document.getElementById('user-dropdown-menu');
+      if (btn && menu && !btn.contains(e.target) && !menu.contains(e.target)) {
+        menu.classList.add('hidden');
+      }
+    });
+
+    function handleUserCardClick() {
+      if (currentAuthUser) {
+        openUserProfileModal();
+      } else {
+        openAuthModal('login');
+      }
+    }
+
+    function openAuthModal(initialTab = 'login') {
+      const container = document.getElementById('modal-container');
+      container.innerHTML = `
+        <div class="fixed inset-0 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fadeIn" onclick="if(event.target === this) closeModal()">
+          <div class="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-2xl max-w-md w-full p-6 space-y-4" onclick="event.stopPropagation()">
+            <!-- Header with Tabs -->
+            <div class="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+              <div class="flex items-center space-x-1">
+                <button onclick="switchAuthTab('login')" id="tab-auth-login" class="px-3 py-1.5 rounded-xl text-xs font-bold ${initialTab === 'login' ? 'bg-brand-600 text-white' : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'} transition-all">
+                  Sign In
+                </button>
+                <button onclick="switchAuthTab('register')" id="tab-auth-register" class="px-3 py-1.5 rounded-xl text-xs font-bold ${initialTab === 'register' ? 'bg-brand-600 text-white' : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'} transition-all">
+                  Create Account
+                </button>
+              </div>
+              <button onclick="closeModal()" class="p-1 text-slate-400 hover:text-slate-600"><i data-lucide="x" class="w-5 h-5"></i></button>
+            </div>
+
+            <!-- Error message container -->
+            <div id="auth-error-msg" class="hidden p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 text-xs font-medium border border-rose-200 dark:border-rose-800"></div>
+
+            <!-- Login Form -->
+            <form id="form-auth-login" onsubmit="handleAuthLogin(event)" class="space-y-3.5 text-xs ${initialTab === 'login' ? '' : 'hidden'}">
+              <div>
+                <label class="block text-slate-400 font-semibold mb-1">Email Address</label>
+                <input type="email" id="auth-login-email" required placeholder="you@example.com" class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-medium text-xs focus:ring-2 focus:ring-brand-500 focus:outline-none" />
+              </div>
+              <div>
+                <div class="flex items-center justify-between mb-1">
+                  <label class="block text-slate-400 font-semibold">Password</label>
+                  <button type="button" onclick="switchAuthTab('forgot')" class="text-[11px] text-brand-600 dark:text-indigo-400 hover:underline">Forgot password?</button>
+                </div>
+                <input type="password" id="auth-login-password" required placeholder="••••••••" class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-medium text-xs focus:ring-2 focus:ring-brand-500 focus:outline-none" />
+              </div>
+              <div class="pt-2">
+                <button type="submit" id="btn-auth-login-submit" class="w-full py-2.5 rounded-xl bg-gradient-to-r from-brand-600 to-indigo-600 hover:from-brand-700 hover:to-indigo-700 text-white font-bold text-xs shadow-md shadow-brand-500/20 active:scale-[0.98] transition-all">
+                  Sign In to HisabX
+                </button>
+              </div>
+              <p class="text-[11px] text-slate-400 text-center pt-1">
+                Don't have an account? <button type="button" onclick="switchAuthTab('register')" class="text-brand-600 dark:text-indigo-400 font-semibold hover:underline">Sign up for free</button>
+              </p>
+            </form>
+
+            <!-- Register Form -->
+            <form id="form-auth-register" onsubmit="handleAuthRegister(event)" class="space-y-3.5 text-xs ${initialTab === 'register' ? '' : 'hidden'}">
+              <div>
+                <label class="block text-slate-400 font-semibold mb-1">Full Name</label>
+                <input type="text" id="auth-reg-name" required placeholder="e.g. Vikram Malhotra" class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-medium text-xs focus:ring-2 focus:ring-brand-500 focus:outline-none" />
+              </div>
+              <div>
+                <label class="block text-slate-400 font-semibold mb-1">Email Address</label>
+                <input type="email" id="auth-reg-email" required placeholder="you@example.com" class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-medium text-xs focus:ring-2 focus:ring-brand-500 focus:outline-none" />
+              </div>
+              <div>
+                <label class="block text-slate-400 font-semibold mb-1">Password (min 6 characters)</label>
+                <input type="password" id="auth-reg-password" required minlength="6" placeholder="Choose a strong password" class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-medium text-xs focus:ring-2 focus:ring-brand-500 focus:outline-none" />
+              </div>
+              <div class="pt-2">
+                <button type="submit" id="btn-auth-reg-submit" class="w-full py-2.5 rounded-xl bg-gradient-to-r from-brand-600 to-indigo-600 hover:from-brand-700 hover:to-indigo-700 text-white font-bold text-xs shadow-md shadow-brand-500/20 active:scale-[0.98] transition-all">
+                  Create Free Account
+                </button>
+              </div>
+              <p class="text-[11px] text-slate-400 text-center pt-1">
+                Already registered? <button type="button" onclick="switchAuthTab('login')" class="text-brand-600 dark:text-indigo-400 font-semibold hover:underline">Sign In</button>
+              </p>
+            </form>
+
+            <!-- Forgot Password Form -->
+            <form id="form-auth-forgot" onsubmit="handleForgotPassword(event)" class="space-y-3.5 text-xs hidden">
+              <div>
+                <h4 class="font-bold text-sm text-slate-800 dark:text-white mb-1">Reset Your Password</h4>
+                <p class="text-xs text-slate-400">Enter your registered email to generate a secure password reset token.</p>
+              </div>
+              <div>
+                <label class="block text-slate-400 font-semibold mb-1">Email Address</label>
+                <input type="email" id="auth-forgot-email" required placeholder="you@example.com" class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-medium text-xs focus:ring-2 focus:ring-brand-500 focus:outline-none" />
+              </div>
+              <div class="pt-1">
+                <button type="submit" class="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs shadow-md transition-all">
+                  Generate Reset Token
+                </button>
+              </div>
+              <div id="reset-token-box" class="hidden p-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 space-y-2">
+                <p class="text-emerald-600 dark:text-emerald-400 font-semibold text-[11px]">Reset Token Generated:</p>
+                <input type="text" id="auth-reset-token" readonly class="w-full px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 font-mono text-[11px] border border-slate-200 dark:border-slate-800 text-slate-800 dark:text-slate-200" />
+                <div>
+                  <label class="block text-slate-400 font-semibold mb-1">Enter New Password</label>
+                  <input type="password" id="auth-new-password" minlength="6" placeholder="New password (min 6 characters)" class="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs text-slate-900 dark:text-white" />
+                </div>
+                <button type="button" onclick="handleResetPassword()" class="w-full py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs">
+                  Save New Password
+                </button>
+              </div>
+              <p class="text-[11px] text-slate-400 text-center pt-1">
+                <button type="button" onclick="switchAuthTab('login')" class="text-brand-600 dark:text-indigo-400 font-semibold hover:underline">&larr; Back to Sign In</button>
+              </p>
+            </form>
+          </div>
+        </div>
+      `;
+      lucide.createIcons();
+    }
+
+    function switchAuthTab(tab) {
+      const errBox = document.getElementById('auth-error-msg');
+      if (errBox) errBox.classList.add('hidden');
+
+      const loginTab = document.getElementById('tab-auth-login');
+      const regTab = document.getElementById('tab-auth-register');
+      const loginForm = document.getElementById('form-auth-login');
+      const regForm = document.getElementById('form-auth-register');
+      const forgotForm = document.getElementById('form-auth-forgot');
+
+      if (tab === 'login') {
+        loginTab?.classList.add('bg-brand-600', 'text-white');
+        loginTab?.classList.remove('text-slate-500');
+        regTab?.classList.remove('bg-brand-600', 'text-white');
+        regTab?.classList.add('text-slate-500');
+        loginForm?.classList.remove('hidden');
+        regForm?.classList.add('hidden');
+        forgotForm?.classList.add('hidden');
+      } else if (tab === 'register') {
+        regTab?.classList.add('bg-brand-600', 'text-white');
+        regTab?.classList.remove('text-slate-500');
+        loginTab?.classList.remove('bg-brand-600', 'text-white');
+        loginTab?.classList.add('text-slate-500');
+        regForm?.classList.remove('hidden');
+        loginForm?.classList.add('hidden');
+        forgotForm?.classList.add('hidden');
+      } else if (tab === 'forgot') {
+        loginTab?.classList.remove('bg-brand-600', 'text-white');
+        loginTab?.classList.add('text-slate-500');
+        regTab?.classList.remove('bg-brand-600', 'text-white');
+        regTab?.classList.add('text-slate-500');
+        forgotForm?.classList.remove('hidden');
+        loginForm?.classList.add('hidden');
+        regForm?.classList.add('hidden');
+      }
+    }
+
+    async function handleAuthLogin(e) {
+      e.preventDefault();
+      const errBox = document.getElementById('auth-error-msg');
+      const email = document.getElementById('auth-login-email').value.trim();
+      const password = document.getElementById('auth-login-password').value;
+      const submitBtn = document.getElementById('btn-auth-login-submit');
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Verifying credentials...';
+      if (errBox) errBox.classList.add('hidden');
+
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || 'Failed to sign in');
+        }
+
+        currentAuthToken = data.token;
+        currentAuthUser = data.user;
+        localStorage.setItem(AUTH_TOKEN_KEY, data.token);
+
+        closeModal();
+        renderAuthUI();
+        showToast(`Welcome back, ${data.user.fullName || data.user.email}!`, 'success');
+
+        const hasLocalData = appState.transactions && appState.transactions.length > 0;
+        await syncFromCloudServer(false);
+
+        if (hasLocalData) {
+          promptSyncLocalDataToCloud();
+        }
+      } catch (err) {
+        if (errBox) {
+          errBox.textContent = err.message;
+          errBox.classList.remove('hidden');
+        }
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Sign In to HisabX';
+      }
+    }
+
+    async function handleAuthRegister(e) {
+      e.preventDefault();
+      const errBox = document.getElementById('auth-error-msg');
+      const fullName = document.getElementById('auth-reg-name').value.trim();
+      const email = document.getElementById('auth-reg-email').value.trim();
+      const password = document.getElementById('auth-reg-password').value;
+      const submitBtn = document.getElementById('btn-auth-reg-submit');
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Creating account...';
+      if (errBox) errBox.classList.add('hidden');
+
+      try {
+        const res = await fetch('/api/auth/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fullName, email, password })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || 'Registration failed');
+        }
+
+        currentAuthToken = data.token;
+        currentAuthUser = data.user;
+        localStorage.setItem(AUTH_TOKEN_KEY, data.token);
+
+        await syncToCloudServer(false);
+
+        closeModal();
+        renderAuthUI();
+        showToast(`Welcome to HisabX, ${data.user.fullName}! Your account is ready.`, 'success');
+        navigateTo('dashboard');
+      } catch (err) {
+        if (errBox) {
+          errBox.textContent = err.message;
+          errBox.classList.remove('hidden');
+        }
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Create Free Account';
+      }
+    }
+
+    async function handleAuthLogout() {
+      if (currentAuthToken) {
+        try {
+          await fetch('/api/auth/logout', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${currentAuthToken}` }
+          });
+        } catch (e) {}
+      }
+      currentAuthToken = null;
+      currentAuthUser = null;
+      localStorage.removeItem(AUTH_TOKEN_KEY);
+      renderAuthUI();
+      showToast('You have been logged out securely', 'info');
+      navigateTo('dashboard');
+    }
+
+    async function handleForgotPassword(e) {
+      e.preventDefault();
+      const email = document.getElementById('auth-forgot-email').value.trim();
+      const errBox = document.getElementById('auth-error-msg');
+      if (errBox) errBox.classList.add('hidden');
+
+      try {
+        const res = await fetch('/api/auth/forgot-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email })
+        });
+        const data = await res.json();
+        if (data.resetToken) {
+          const box = document.getElementById('reset-token-box');
+          const tokenInput = document.getElementById('auth-reset-token');
+          if (box && tokenInput) {
+            tokenInput.value = data.resetToken;
+            box.classList.remove('hidden');
+          }
+          showToast('Reset token generated. Enter a new password below.', 'info');
+        } else {
+          showToast(data.message || 'Check your email for reset instructions', 'info');
+        }
+      } catch (err) {
+        if (errBox) {
+          errBox.textContent = err.message;
+          errBox.classList.remove('hidden');
+        }
+      }
+    }
+
+    async function handleResetPassword() {
+      const token = document.getElementById('auth-reset-token').value.trim();
+      const newPassword = document.getElementById('auth-new-password').value;
+      const errBox = document.getElementById('auth-error-msg');
+      if (!newPassword || newPassword.length < 6) {
+        if (errBox) {
+          errBox.textContent = 'Password must be at least 6 characters long';
+          errBox.classList.remove('hidden');
+        }
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/auth/reset-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token, newPassword })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Password update failed');
+        showToast('Password updated! Please log in.', 'success');
+        switchAuthTab('login');
+      } catch (err) {
+        if (errBox) {
+          errBox.textContent = err.message;
+          errBox.classList.remove('hidden');
+        }
+      }
+    }
+
+    function openUserProfileModal() {
+      if (!currentAuthUser) return;
+      const origin = window.location.origin || 'http://localhost:3000';
+      const userWebhookUrl = `${origin}/api/webhook/upi?token=${currentAuthUser.webhookSecret}`;
+
+      const container = document.getElementById('modal-container');
+      container.innerHTML = `
+        <div class="fixed inset-0 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fadeIn" onclick="if(event.target === this) closeModal()">
+          <div class="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-2xl max-w-lg w-full p-6 space-y-4" onclick="event.stopPropagation()">
+            <div class="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+              <h3 class="font-bold text-base text-slate-900 dark:text-white flex items-center space-x-2">
+                <i data-lucide="shield-check" class="w-5 h-5 text-emerald-500"></i>
+                <span>Account & Security Settings</span>
+              </h3>
+              <button onclick="closeModal()" class="p-1 text-slate-400 hover:text-slate-600"><i data-lucide="x" class="w-5 h-5"></i></button>
+            </div>
+
+            <!-- Profile Info Card -->
+            <div class="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-800 space-y-2 text-xs">
+              <div class="flex items-center justify-between">
+                <span class="text-slate-400 font-medium">Logged In As</span>
+                <span class="font-bold text-slate-900 dark:text-white">${currentAuthUser.fullName || 'User'}</span>
+              </div>
+              <div class="flex items-center justify-between">
+                <span class="text-slate-400 font-medium">Email Address</span>
+                <span class="font-mono text-slate-700 dark:text-slate-300">${currentAuthUser.email}</span>
+              </div>
+              <div class="flex items-center justify-between">
+                <span class="text-slate-400 font-medium">Data Storage</span>
+                <span class="font-semibold text-emerald-600 dark:text-emerald-400">Isolated Cloud DB (PostgreSQL / ACID)</span>
+              </div>
+            </div>
+
+            <!-- Private Webhook Secret for MacroDroid -->
+            <div class="space-y-2 text-xs">
+              <div class="flex items-center justify-between">
+                <span class="font-bold text-slate-800 dark:text-slate-200">Your Private UPI Webhook URL</span>
+                <span class="text-[10px] px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300 font-bold">Personal Multi-User Token</span>
+              </div>
+              <p class="text-[11px] text-slate-400">Configure MacroDroid / Tasker to forward bank SMS to this exact endpoint. Every transaction will be securely attributed only to your account.</p>
+              <div class="p-3 rounded-xl bg-slate-100 dark:bg-slate-800 font-mono text-[11px] text-indigo-600 dark:text-indigo-400 break-all select-all border border-slate-200 dark:border-slate-700">
+                ${userWebhookUrl}
+              </div>
+              <div class="flex justify-end space-x-2 pt-1">
+                <button onclick="navigator.clipboard.writeText('${userWebhookUrl}'); showToast('Copied personal webhook URL!', 'success');" class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs transition-colors shadow-sm">
+                  Copy Personal Webhook URL
+                </button>
+              </div>
+            </div>
+
+            <!-- Cloud Actions -->
+            <div class="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
+              <button onclick="handleAuthLogout(); closeModal();" class="px-4 py-2 rounded-xl bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100 text-rose-600 dark:text-rose-400 font-semibold text-xs transition-colors">
+                Sign Out
+              </button>
+              <div class="flex items-center space-x-2">
+                <button onclick="syncToCloudServer(true)" class="px-4 py-2 rounded-xl bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs transition-colors shadow-sm">
+                  Sync All to Cloud Now
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+      lucide.createIcons();
+    }
+
+    async function syncFromCloudServer(notify = false) {
+      if (!currentAuthToken) return;
+      try {
+        const res = await fetch('/api/user/data', {
+          headers: { 'Authorization': `Bearer ${currentAuthToken}` }
+        });
+        if (!res.ok) return;
+        const result = await res.json();
+        if (result && result.data) {
+          const cloud = result.data;
+          if (Array.isArray(cloud.accounts) && cloud.accounts.length > 0) {
+            appState.accounts = cloud.accounts;
+          }
+          if (Array.isArray(cloud.transactions)) {
+            appState.transactions = cloud.transactions;
+          }
+          if (Array.isArray(cloud.debts)) appState.debts = cloud.debts;
+          if (Array.isArray(cloud.budgets)) appState.budgets = cloud.budgets;
+          if (Array.isArray(cloud.reminders)) appState.reminders = cloud.reminders;
+          if (cloud.dailyNotes) appState.dailyNotes = cloud.dailyNotes;
+          if (Array.isArray(cloud.monthlyNotes)) appState.monthlyNotes = cloud.monthlyNotes;
+
+          recalculateAllBalances();
+          saveState();
+          if (activeView === 'dashboard') renderDashboardView(document.getElementById('main-content'));
+          else if (activeView === 'transactions') renderTransactionsView(document.getElementById('main-content'));
+          else if (activeView === 'calendar') renderCalendarView(document.getElementById('main-content'));
+          if (notify) showToast('Latest data pulled from cloud server!', 'success');
+        }
+      } catch (err) {
+        if (notify) showToast('Cloud pull error: ' + err.message, 'error');
+      }
+    }
+
+    async function syncToCloudServer(notify = false) {
+      if (!currentAuthToken) return;
+      try {
+        const res = await fetch('/api/user/sync', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${currentAuthToken}`
+          },
+          body: JSON.stringify({
+            accounts: appState.accounts,
+            transactions: appState.transactions,
+            debts: appState.debts,
+            budgets: appState.budgets,
+            reminders: appState.reminders,
+            dailyNotes: appState.dailyNotes,
+            monthlyNotes: appState.monthlyNotes
+          })
+        });
+        const data = await res.json();
+        if (res.ok && notify) {
+          showToast('Data synchronized to secure cloud database!', 'success');
+        }
+      } catch (err) {
+        if (notify) showToast('Cloud sync failed: ' + err.message, 'error');
+      }
+    }
+
+    function debounceSyncToCloud() {
+      if (!currentAuthToken) return;
+      if (syncDebounceTimer) clearTimeout(syncDebounceTimer);
+      syncDebounceTimer = setTimeout(() => {
+        syncToCloudServer(false);
+      }, 1500);
+    }
+
+    function promptSyncLocalDataToCloud() {
+      const container = document.getElementById('modal-container');
+      container.innerHTML = `
+        <div class="fixed inset-0 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fadeIn" onclick="if(event.target === this) closeModal()">
+          <div class="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-2xl max-w-md w-full p-6 space-y-4" onclick="event.stopPropagation()">
+            <div class="flex items-center space-x-3">
+              <div class="w-10 h-10 rounded-2xl bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0">
+                <i data-lucide="cloud-upload" class="w-5 h-5"></i>
+              </div>
+              <div>
+                <h3 class="font-bold text-sm text-slate-900 dark:text-white">Merge Device Data with Cloud Account?</h3>
+                <p class="text-xs text-slate-400">We detected local transactions on this device.</p>
+              </div>
+            </div>
+            <p class="text-xs text-slate-500 dark:text-slate-400">
+              Would you like to safely upload and merge your local financial records into your authenticated HisabX account? Existing records will not be overwritten.
+            </p>
+            <div class="flex justify-end space-x-2 pt-2 border-t border-slate-100 dark:border-slate-800 text-xs">
+              <button onclick="closeModal()" class="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 font-semibold">
+                Keep Separate
+              </button>
+              <button onclick="syncToCloudServer(true); closeModal();" class="px-5 py-2.5 rounded-xl bg-brand-600 hover:bg-brand-700 text-white font-bold shadow-md shadow-brand-500/20">
+                Merge & Sync to Cloud
+              </button>
+            </div>
+          </div>
+        </div>
+      `;
+      lucide.createIcons();
+    }
+
     // Boot
-    window.addEventListener('DOMContentLoaded', () => {
+    window.addEventListener('DOMContentLoaded', async () => {
       loadState();
+      await initAuth();
       navigateTo('dashboard');
       syncWebhookTransactions();
       setInterval(syncWebhookTransactions, 25000);

@@ -1,13 +1,35 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
+const nodeEnv = process.env.NODE_ENV || 'development';
+const isProduction = nodeEnv === 'production';
+
+function getJwtSecret(): string {
+  const secret = process.env.JWT_SECRET;
+  if (isProduction) {
+    if (!secret || secret.trim().length < 32) {
+      throw new Error('[Security Startup Error] In production, JWT_SECRET must be configured and at least 32 characters long.');
+    }
+    return secret.trim();
+  }
+  return secret || 'dev-ephemeral-local-key-only';
+}
+
+function getDatabaseUrl(): string {
+  const dbUrl = process.env.DATABASE_URL;
+  if (isProduction && (!dbUrl || !dbUrl.trim())) {
+    throw new Error('[Security Startup Error] In production, DATABASE_URL must be configured via environment variables.');
+  }
+  return dbUrl || '';
+}
+
 export const config = {
   port: parseInt(process.env.PORT || '5000', 10),
-  nodeEnv: process.env.NODE_ENV || 'development',
-  jwtSecret: process.env.JWT_SECRET || 'hisabx_super_secure_jwt_secret_key_prod_2026',
+  nodeEnv,
+  jwtSecret: getJwtSecret(),
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
   corsOrigin: process.env.CORS_ORIGIN || '*',
-  databaseUrl: process.env.DATABASE_URL || 'postgresql://hisabx_user:hisabx_password@localhost:5432/hisabx_db?schema=public',
+  databaseUrl: getDatabaseUrl(),
   defaultCurrency: 'INR',
   defaultTimezone: 'Asia/Kolkata',
   rateLimitWindowMs: 15 * 60 * 1000,

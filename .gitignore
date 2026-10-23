@@ -3,7 +3,6 @@
 !.env.example
 node_modules/
 .git/
-data/webhook_transactions.json
-
+data/*.json
+data/*.tmp.*
 dist/
-test_webhook.js

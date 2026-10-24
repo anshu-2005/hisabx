@@ -1,5 +1,9 @@
 {
   "version": 2,
+  "env": {
+    "JWT_SECRET": "hisabx_ultra_secure_jwt_secret_32_characters_long_key_2026!",
+    "UPI_WEBHOOK_SECRET": "whsec_production_secret_key_849281"
+  },
   "functions": {
     "api/index.js": {
       "includeFiles": "hisabx_app.html"

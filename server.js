@@ -29,8 +29,10 @@ const {
 
 const PORT = process.env.PORT || 3000;
 const HTML_FILE = path.join(__dirname, 'hisabx_app.html');
-const DATA_DIR = path.join(__dirname, 'data');
+const IS_VERCEL = Boolean(process.env.VERCEL);
+const DATA_DIR = IS_VERCEL ? path.join('/tmp', 'hisabx_data') : path.join(__dirname, 'data');
 const LEDGER_FILE = path.join(DATA_DIR, 'webhook_transactions.json');
+const INITIAL_LEDGER_FILE = path.join(__dirname, 'data', 'webhook_transactions.json');
 const MAX_PAYLOAD_SIZE = 64 * 1024; // 64 KB
 
 // Webhook Secret from Environment Variable (Fallback / Single-User Mode)
@@ -64,6 +66,12 @@ function checkRateLimit(ip, limit = 15, windowMs = 60000) {
 // Durable Server-Side Store Functions (for global webhook compatibility)
 function loadWebhookLedger() {
   try {
+    if (IS_VERCEL && !fs.existsSync(LEDGER_FILE) && fs.existsSync(INITIAL_LEDGER_FILE)) {
+      try {
+        fs.copyFileSync(INITIAL_LEDGER_FILE, LEDGER_FILE);
+      } catch (e) {}
+    }
+
     if (!fs.existsSync(LEDGER_FILE)) {
       return { transactions: [], lastUpdated: new Date().toISOString() };
     }
@@ -588,6 +596,179 @@ async function requestHandler(req, res) {
       const payload = await readJsonBody(req);
       const reminder = db.saveReminder(auth.user.id, payload);
       return sendJson(res, 200, { status: 'success', reminder });
+    } catch (err) {
+      return sendJson(res, err.status || 500, { status: 'error', error: err.message });
+    }
+  }
+
+  // =========================================================================
+  // SAAS EXTENSIONS: SUBSCRIPTIONS, GROUPS & STATEMENT IMPORT
+  // =========================================================================
+
+  // GET /api/subscription/status - Get Current User Plan
+  if (req.method === 'GET' && pathname === '/api/subscription/status') {
+    const auth = authenticateJwtToken(req);
+    if (!auth.authenticated) return sendJson(res, 401, { status: 'error', error: auth.reason });
+    const sub = db.getSubscription(auth.user.id);
+    return sendJson(res, 200, { status: 'success', subscription: sub });
+  }
+
+  // POST /api/subscription/upgrade - Upgrade User to Pro/Enterprise Tier
+  if (req.method === 'POST' && pathname === '/api/subscription/upgrade') {
+    const auth = authenticateJwtToken(req);
+    if (!auth.authenticated) return sendJson(res, 401, { status: 'error', error: auth.reason });
+    try {
+      const payload = await readJsonBody(req);
+      const sub = db.updateSubscription(auth.user.id, {
+        plan: payload.plan || 'pro',
+        durationMonths: payload.durationMonths || 12,
+        paymentId: payload.paymentId || `pay_rzp_${Date.now()}`
+      });
+      safeLog('info', 'User upgraded subscription tier', { userId: auth.user.id, plan: sub.plan });
+      return sendJson(res, 200, { status: 'success', message: `Upgraded to ${sub.name} successfully!`, subscription: sub });
+    } catch (err) {
+      return sendJson(res, err.status || 500, { status: 'error', error: err.message });
+    }
+  }
+
+  // GET /api/groups - Get Groups for Splitwise
+  if (req.method === 'GET' && pathname === '/api/groups') {
+    const auth = authenticateJwtToken(req);
+    if (!auth.authenticated) return sendJson(res, 401, { status: 'error', error: auth.reason });
+    const groups = db.getGroups(auth.user.id);
+    return sendJson(res, 200, { status: 'success', groups });
+  }
+
+  // POST /api/groups - Create New Group
+  if (req.method === 'POST' && pathname === '/api/groups') {
+    const auth = authenticateJwtToken(req);
+    if (!auth.authenticated) return sendJson(res, 401, { status: 'error', error: auth.reason });
+    try {
+      const payload = await readJsonBody(req);
+      const group = db.createGroup(auth.user.id, payload);
+      return sendJson(res, 201, { status: 'success', group });
+    } catch (err) {
+      return sendJson(res, err.status || 500, { status: 'error', error: err.message });
+    }
+  }
+
+  // POST /api/groups/:id/expenses - Add Expense to Group
+  if (req.method === 'POST' && pathname.startsWith('/api/groups/') && pathname.endsWith('/expenses')) {
+    const auth = authenticateJwtToken(req);
+    if (!auth.authenticated) return sendJson(res, 401, { status: 'error', error: auth.reason });
+    try {
+      const parts = pathname.split('/');
+      const groupId = parts[3];
+      const payload = await readJsonBody(req);
+      const expense = db.addGroupExpense(auth.user.id, groupId, payload);
+      return sendJson(res, 201, { status: 'success', expense });
+    } catch (err) {
+      return sendJson(res, err.status || 500, { status: 'error', error: err.message });
+    }
+  }
+
+  // POST /api/statement/parse - Bank Statement Parser (CSV / Text / TSV)
+  if (req.method === 'POST' && pathname === '/api/statement/parse') {
+    const auth = authenticateJwtToken(req);
+    if (!auth.authenticated) return sendJson(res, 401, { status: 'error', error: auth.reason });
+    try {
+      const payload = await readJsonBody(req);
+      const rawText = payload.content || '';
+      if (!rawText.trim()) {
+        return sendJson(res, 400, { status: 'error', error: 'Statement content string is required' });
+      }
+
+      const lines = rawText.split(/\r?\n/).filter(l => l.trim().length > 0);
+      const parsedTransactions = [];
+      let skippedCount = 0;
+
+      lines.forEach((line, idx) => {
+        // Skip header lines
+        if (idx === 0 && (line.toLowerCase().includes('date') || line.toLowerCase().includes('narration') || line.toLowerCase().includes('amount'))) {
+          return;
+        }
+
+        // CSV parsing / Delimiter split
+        const cols = line.split(/[,\t;|]/).map(c => c.trim().replace(/^["']|["']$/g, ''));
+        if (cols.length < 3) {
+          skippedCount++;
+          return;
+        }
+
+        // Search for amount
+        let amount = 0;
+        let isCredit = false;
+        let isDebit = false;
+        let description = 'Bank Entry';
+        let dateStr = new Date().toISOString().split('T')[0];
+
+        // Try to match date
+        for (const col of cols) {
+          const dMatch = col.match(/^(\d{1,2})[-/.](\d{1,2}|[A-Za-z]{3})[-/.](\d{2,4})$/);
+          if (dMatch) {
+            try {
+              const d = new Date(col);
+              if (!isNaN(d.getTime())) dateStr = d.toISOString().split('T')[0];
+            } catch (e) {}
+            break;
+          }
+        }
+
+        // Try to identify credit/debit & amount
+        cols.forEach(col => {
+          const num = parseFloat(col.replace(/,/g, ''));
+          if (!isNaN(num) && num > 0) {
+            if (num > amount) amount = num;
+          }
+          if (/cr|credit|deposit|inward/i.test(col)) isCredit = true;
+          if (/dr|debit|withdrawal|outward/i.test(col)) isDebit = true;
+        });
+
+        // Identify description
+        const candidateDesc = cols.find(c => c.length > 5 && isNaN(Number(c.replace(/,/g, ''))));
+        if (candidateDesc) description = candidateDesc.substring(0, 60);
+
+        if (amount > 0) {
+          const txType = isCredit ? 'INCOME' : 'EXPENSE';
+          let category = txType === 'INCOME' ? 'Salary & Inflows' : 'Bank Expense';
+          
+          for (const [catName, keywords] of Object.entries(CATEGORY_MAP)) {
+            if (keywords.some(k => description.toLowerCase().includes(k))) {
+              category = catName;
+              break;
+            }
+          }
+
+          parsedTransactions.push({
+            id: `TX-STMT-${Date.now()}-${idx}-${Math.floor(Math.random() * 1000)}`,
+            transactionType: txType,
+            amount: Math.round(amount * 100) / 100,
+            date: dateStr,
+            description,
+            category,
+            paymentMethod: 'NET_BANKING',
+            status: 'COMPLETED',
+            notes: 'Imported via HisabX SaaS Statement Engine'
+          });
+        } else {
+          skippedCount++;
+        }
+      });
+
+      // If user requested commit, save directly into user's ledger
+      if (payload.commit === true && parsedTransactions.length > 0) {
+        parsedTransactions.forEach(tx => {
+          db.createTransaction(auth.user.id, tx);
+        });
+      }
+
+      return sendJson(res, 200, {
+        status: 'success',
+        totalParsed: parsedTransactions.length,
+        skippedCount,
+        committed: payload.commit === true,
+        transactions: parsedTransactions
+      });
     } catch (err) {
       return sendJson(res, err.status || 500, { status: 'error', error: err.message });
     }

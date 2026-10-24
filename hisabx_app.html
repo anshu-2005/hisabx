@@ -157,6 +157,14 @@
           </div>
         </button>
 
+        <button onclick="navigateTo('group-split')" id="nav-group-split" class="nav-btn w-full flex items-center justify-between px-3 py-2 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors">
+          <div class="flex items-center space-x-3">
+            <i data-lucide="split" class="w-4 h-4 text-purple-500"></i>
+            <span>Group Split (Bills)</span>
+          </div>
+          <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300 font-semibold">SaaS</span>
+        </button>
+
         <div class="pt-2 pb-1">
           <div class="h-px bg-slate-200 dark:bg-slate-800"></div>
         </div>
@@ -175,6 +183,24 @@
           </div>
         </button>
       </nav>
+
+      <!-- SaaS Pro Plan Card -->
+      <div class="px-3 pb-2">
+        <div onclick="openSubscriptionModal()" class="p-3 rounded-2xl bg-gradient-to-br from-amber-500/10 via-brand-600/10 to-indigo-600/10 border border-amber-500/30 cursor-pointer hover:border-amber-500/60 transition-all group">
+          <div class="flex items-center justify-between mb-1.5">
+            <span class="text-[11px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wider flex items-center space-x-1">
+              <i data-lucide="crown" class="w-3.5 h-3.5 mr-1 text-amber-500"></i>
+              <span id="sidebar-plan-badge">Pro Tier</span>
+            </span>
+            <span class="text-[10px] bg-amber-500 text-white font-bold px-1.5 py-0.5 rounded-full">SaaS</span>
+          </div>
+          <p class="text-[11px] text-slate-600 dark:text-slate-300 font-medium">Bank AI Parser, Webhooks & Group Splits</p>
+          <div class="mt-2 text-[11px] font-bold text-brand-600 dark:text-indigo-400 group-hover:underline flex items-center">
+            <span>Manage Plan & Pricing</span>
+            <i data-lucide="chevron-right" class="w-3 h-3 ml-1"></i>
+          </div>
+        </div>
+      </div>
 
       <!-- Sidebar Footer -->
       <div class="p-3 border-t border-slate-100 dark:border-slate-800">
@@ -243,6 +269,17 @@
             <i data-lucide="sparkles" class="w-3.5 h-3.5 text-amber-500"></i>
             <span class="hidden sm:inline">NLP Smart Add</span>
             <span class="sm:hidden">Smart</span>
+          </button>
+
+          <button onclick="openStatementParserModal()" class="hidden md:flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200/80 dark:border-blue-800 text-xs font-medium hover:bg-blue-100 transition-colors">
+            <i data-lucide="file-spreadsheet" class="w-3.5 h-3.5 text-blue-500"></i>
+            <span>Import Statement</span>
+          </button>
+
+          <button onclick="openSubscriptionModal()" class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white text-xs font-bold shadow-sm shadow-amber-500/20 transition-all active:scale-95">
+            <i data-lucide="crown" class="w-3.5 h-3.5 text-amber-200"></i>
+            <span class="hidden sm:inline">Upgrade Pro</span>
+            <span class="sm:hidden">Pro</span>
           </button>
 
           <button onclick="openAddTransactionModal('EXPENSE')" class="flex items-center space-x-1.5 px-3.5 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-700 text-white text-xs font-semibold shadow-sm transition-colors active:scale-95">
@@ -620,7 +657,8 @@
         'reminders': ['Financial Reminders & Dues', 'Scheduled receivables, payables and utility dues'],
         'reports': ['Analytics & Reports', 'Income vs expense trends, merchant breakdown & net savings'],
         'import-backup': ['Data Import & Backup', 'CSV transaction importer, duplicate detection and data download'],
-        'settings': ['Application Settings', 'Currency format, Indian English locale and theme preferences']
+        'settings': ['Application Settings', 'Currency format, Indian English locale and theme preferences'],
+        'group-split': ['Group Split & Shared Bills', 'Splitwise-style expense sharing, roommate debts & settlements']
       };
       if (titles[viewId]) {
         pageTitle.textContent = titles[viewId][0];
@@ -643,6 +681,7 @@
         case 'reports': renderReportsView(main); break;
         case 'import-backup': renderImportBackupView(main); break;
         case 'settings': renderSettingsView(main); break;
+        case 'group-split': renderGroupSplitView(main); break;
         default: renderDashboardView(main); break;
       }
 
@@ -5203,6 +5242,593 @@
         </div>
       `;
       lucide.createIcons();
+    }
+
+    // =========================================================================
+    // SAAS SUITE: 1. PRICING & SUBSCRIPTION MODAL
+    // =========================================================================
+    function openSubscriptionModal() {
+      const container = document.getElementById('modal-container');
+      const isPro = (appState.subscription && appState.subscription.plan === 'pro');
+
+      container.innerHTML = `
+        <div class="fixed inset-0 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-fadeIn" onclick="if(event.target === this) closeModal()">
+          <div class="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-2xl max-w-2xl w-full p-6 sm:p-8 space-y-6 max-h-[90vh] overflow-y-auto" onclick="event.stopPropagation()">
+            
+            <!-- Header -->
+            <div class="flex items-start justify-between border-b border-slate-100 dark:border-slate-800 pb-4">
+              <div>
+                <div class="flex items-center space-x-2">
+                  <span class="px-2.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 text-xs font-bold border border-amber-300/40">
+                    SaaS Tier Management
+                  </span>
+                  ${isPro ? '<span class="px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold">⭐ Active Plan: PRO</span>' : ''}
+                </div>
+                <h3 class="text-xl font-extrabold text-slate-900 dark:text-white mt-1">Upgrade Your Financial Intelligence</h3>
+                <p class="text-xs text-slate-500 dark:text-slate-400">Unlock automated bank SMS ingestion, AI statement parsing, and unlimited accounts.</p>
+              </div>
+              <button onclick="closeModal()" class="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-white"><i data-lucide="x" class="w-5 h-5"></i></button>
+            </div>
+
+            <!-- Pricing Grid -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <!-- Free Starter Card -->
+              <div class="p-5 rounded-2xl border ${!isPro ? 'border-brand-500 bg-brand-50/20 dark:bg-brand-950/20' : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40'} flex flex-col justify-between">
+                <div>
+                  <div class="flex items-center justify-between mb-2">
+                    <span class="text-xs font-bold uppercase text-slate-500 tracking-wider">Starter Tier</span>
+                    ${!isPro ? '<span class="text-[10px] bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 font-bold px-2 py-0.5 rounded-full">Current</span>' : ''}
+                  </div>
+                  <div class="flex items-baseline space-x-1">
+                    <span class="text-2xl font-black text-slate-900 dark:text-white">₹0</span>
+                    <span class="text-xs text-slate-400">/ forever</span>
+                  </div>
+                  <p class="text-xs text-slate-500 dark:text-slate-400 mt-2">Essential personal finances for individuals starting out.</p>
+
+                  <ul class="mt-4 space-y-2 text-xs text-slate-600 dark:text-slate-300">
+                    <li class="flex items-center space-x-2"><i data-lucide="check" class="w-4 h-4 text-emerald-500"></i><span>Up to 3 Bank/Wallet Accounts</span></li>
+                    <li class="flex items-center space-x-2"><i data-lucide="check" class="w-4 h-4 text-emerald-500"></i><span>Monthly Ledger & Calendar</span></li>
+                    <li class="flex items-center space-x-2"><i data-lucide="check" class="w-4 h-4 text-emerald-500"></i><span>Basic CSV Export</span></li>
+                    <li class="flex items-center space-x-2 text-slate-400"><i data-lucide="x" class="w-4 h-4 text-slate-300 dark:text-slate-600"></i><span>Bank Statement AI Parser</span></li>
+                    <li class="flex items-center space-x-2 text-slate-400"><i data-lucide="x" class="w-4 h-4 text-slate-300 dark:text-slate-600"></i><span>Group Expense (Splitwise)</span></li>
+                  </ul>
+                </div>
+
+                <div class="mt-6">
+                  <button disabled class="w-full py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-400 text-xs font-bold cursor-not-allowed">
+                    ${!isPro ? 'Current Plan' : 'Downgrade to Free'}
+                  </button>
+                </div>
+              </div>
+
+              <!-- Pro OS Card -->
+              <div class="p-5 rounded-2xl border-2 border-amber-500 bg-gradient-to-b from-amber-500/5 to-indigo-500/5 relative flex flex-col justify-between shadow-lg shadow-amber-500/10">
+                <span class="absolute -top-3 right-4 px-3 py-0.5 rounded-full bg-gradient-to-r from-amber-500 to-amber-600 text-white font-bold text-[10px] tracking-wide uppercase shadow-sm">
+                  Recommended
+                </span>
+
+                <div>
+                  <div class="flex items-center justify-between mb-2">
+                    <span class="text-xs font-bold uppercase text-amber-600 dark:text-amber-400 tracking-wider flex items-center">
+                      <i data-lucide="crown" class="w-3.5 h-3.5 mr-1 text-amber-500"></i>
+                      Pro Financial OS
+                    </span>
+                  </div>
+                  <div class="flex items-baseline space-x-1">
+                    <span class="text-3xl font-black text-slate-900 dark:text-white">₹1,499</span>
+                    <span class="text-xs text-slate-400">/ year (or ₹199/mo)</span>
+                  </div>
+                  <p class="text-xs text-slate-500 dark:text-slate-400 mt-2">Comprehensive suite for professionals, freelancers & power users.</p>
+
+                  <ul class="mt-4 space-y-2 text-xs text-slate-700 dark:text-slate-200 font-medium">
+                    <li class="flex items-center space-x-2"><i data-lucide="check-circle-2" class="w-4 h-4 text-emerald-500"></i><span><strong>Unlimited</strong> Bank & UPI Accounts</span></li>
+                    <li class="flex items-center space-x-2"><i data-lucide="check-circle-2" class="w-4 h-4 text-emerald-500"></i><span><strong>Bank Statement AI Parser</strong> (PDF/CSV)</span></li>
+                    <li class="flex items-center space-x-2"><i data-lucide="check-circle-2" class="w-4 h-4 text-emerald-500"></i><span><strong>Direct UPI Webhook Bridge</strong> (MacroDroid)</span></li>
+                    <li class="flex items-center space-x-2"><i data-lucide="check-circle-2" class="w-4 h-4 text-emerald-500"></i><span><strong>Group Split & Shared Bills</strong> (Splitwise)</span></li>
+                    <li class="flex items-center space-x-2"><i data-lucide="check-circle-2" class="w-4 h-4 text-emerald-500"></i><span>Priority 24/7 Cloud Backup & Sync</span></li>
+                  </ul>
+                </div>
+
+                <div class="mt-6">
+                  <button onclick="handleUpgradePlan('pro')" class="w-full py-2.5 rounded-xl bg-gradient-to-r from-amber-500 via-amber-600 to-indigo-600 hover:from-amber-600 hover:to-indigo-700 text-white text-xs font-extrabold shadow-md shadow-amber-500/25 active:scale-[0.98] transition-all">
+                    ${isPro ? '⭐ Active (Extend Subscription)' : 'Upgrade Now (1-Click Instant)'}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div class="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 flex items-center justify-between text-xs text-slate-500">
+              <div class="flex items-center space-x-2">
+                <i data-lucide="shield-check" class="w-4 h-4 text-emerald-500"></i>
+                <span>Secured via Razorpay & Stripe • 256-Bit SSL Bank Grade Security</span>
+              </div>
+              <span class="font-semibold text-slate-700 dark:text-slate-300">14-Day Money Back Guarantee</span>
+            </div>
+
+          </div>
+        </div>
+      `;
+      lucide.createIcons();
+    }
+
+    async function handleUpgradePlan(planName = 'pro') {
+      try {
+        if (!appState.subscription) appState.subscription = {};
+        appState.subscription = {
+          plan: planName,
+          status: 'active',
+          name: 'Pro Financial OS',
+          expiresAt: new Date(Date.now() + 365 * 86400000).toISOString()
+        };
+        saveState();
+
+        // Also notify backend if authenticated
+        if (currentAuthToken) {
+          await fetch('/api/subscription/upgrade', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${currentAuthToken}` },
+            body: JSON.stringify({ plan: planName, durationMonths: 12 })
+          });
+        }
+
+        const badgeEl = document.getElementById('sidebar-plan-badge');
+        if (badgeEl) badgeEl.textContent = '⭐ Pro Active';
+        
+        closeModal();
+        showToast('🎉 Congratulations! You have successfully upgraded to HisabX Pro!', 'success');
+      } catch (e) {
+        showToast('Plan upgraded locally: ' + e.message, 'info');
+      }
+    }
+
+    // =========================================================================
+    // SAAS SUITE: 2. BANK STATEMENT AI PARSER
+    // =========================================================================
+    let parsedStatementCache = [];
+
+    function openStatementParserModal() {
+      const container = document.getElementById('modal-container');
+      parsedStatementCache = [];
+
+      container.innerHTML = `
+        <div class="fixed inset-0 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-fadeIn" onclick="if(event.target === this) closeModal()">
+          <div class="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-2xl max-w-3xl w-full p-6 sm:p-8 space-y-5 max-h-[90vh] overflow-y-auto" onclick="event.stopPropagation()">
+            
+            <!-- Header -->
+            <div class="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+              <div class="flex items-center space-x-3">
+                <div class="w-10 h-10 rounded-2xl bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 flex items-center justify-center">
+                  <i data-lucide="file-spreadsheet" class="w-5 h-5"></i>
+                </div>
+                <div>
+                  <h3 class="text-base font-bold text-slate-900 dark:text-white">Bank Statement AI Importer</h3>
+                  <p class="text-xs text-slate-400">Paste text from SBI, HDFC, ICICI, Axis or upload CSV statement.</p>
+                </div>
+              </div>
+              <button onclick="closeModal()" class="p-1.5 text-slate-400 hover:text-slate-600"><i data-lucide="x" class="w-5 h-5"></i></button>
+            </div>
+
+            <!-- Quick sample buttons -->
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-semibold text-slate-500">Paste Statement Text or CSV:</span>
+              <button type="button" onclick="loadSampleStatementData()" class="text-xs text-brand-600 dark:text-indigo-400 hover:underline font-bold">
+                Load Sample HDFC/SBI Statement
+              </button>
+            </div>
+
+            <textarea id="statement-raw-input" rows="6" placeholder="Paste your statement rows here (e.g.):&#10;24-10-2026, UPI-SWIGGY-129482, Dr, 450.00&#10;25-10-2026, SALARY CREDIT OCT, Cr, 85000.00&#10;26-10-2026, PETROL HPCL PUNE, Dr, 1200.00" class="w-full p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-mono text-slate-800 dark:text-slate-200 focus:ring-2 focus:ring-brand-500 focus:outline-none"></textarea>
+
+            <div class="flex justify-between items-center">
+              <div class="flex items-center space-x-2 text-xs text-slate-400">
+                <i data-lucide="info" class="w-4 h-4 text-blue-500"></i>
+                <span>Auto-detects Amount, Debit/Credit, Date & Categories</span>
+              </div>
+              <button onclick="executeStatementParse()" class="px-5 py-2.5 rounded-xl bg-brand-600 hover:bg-brand-700 text-white text-xs font-bold shadow-md shadow-brand-500/20 active:scale-95 transition-all">
+                Parse Transactions
+              </button>
+            </div>
+
+            <!-- Parsed Results Container -->
+            <div id="statement-preview-container" class="hidden space-y-3 pt-3 border-t border-slate-100 dark:border-slate-800">
+              <!-- Dynamically populated -->
+            </div>
+
+          </div>
+        </div>
+      `;
+      lucide.createIcons();
+    }
+
+    function loadSampleStatementData() {
+      const sample = `24-10-2026, UPI-SWIGGY-REST-4921, Dr, 580.00\n24-10-2026, HPCL PETROL PUMP MUMBAI, Dr, 1500.00\n25-10-2026, SALARY CREDIT TECH CORP, Cr, 95000.00\n25-10-2026, NETFLIX SUBSCRIPTION, Dr, 649.00\n26-10-2026, UPI-BLINKIT GROCERIES, Dr, 890.00`;
+      const el = document.getElementById('statement-raw-input');
+      if (el) el.value = sample;
+    }
+
+    async function executeStatementParse() {
+      const input = document.getElementById('statement-raw-input');
+      if (!input || !input.value.trim()) {
+        showToast('Please paste or write statement lines first', 'error');
+        return;
+      }
+
+      const raw = input.value.trim();
+      let resData = null;
+
+      try {
+        const response = await fetch('/api/statement/parse', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(currentAuthToken ? { 'Authorization': `Bearer ${currentAuthToken}` } : {})
+          },
+          body: JSON.stringify({ content: raw, commit: false })
+        });
+        if (response.ok) {
+          resData = await response.json();
+        }
+      } catch (e) {}
+
+      // Fallback local parser if offline
+      if (!resData || !resData.transactions) {
+        const lines = raw.split(/\r?\n/).filter(l => l.trim().length > 0);
+        const txs = [];
+        lines.forEach((l, i) => {
+          const parts = l.split(/[,\t|]/);
+          if (parts.length >= 3) {
+            const isCr = /cr|credit|salary/i.test(l);
+            const amt = parseFloat(l.match(/[\d,]+(?:\.\d{1,2})?/)?.[0]?.replace(/,/g, '') || '500');
+            txs.push({
+              id: `TX-STMT-LCL-${Date.now()}-${i}`,
+              transactionType: isCr ? 'INCOME' : 'EXPENSE',
+              amount: amt,
+              date: new Date().toISOString().split('T')[0],
+              description: parts[1]?.trim() || 'Bank Entry',
+              category: isCr ? 'Salary' : 'Bank Expense',
+              status: 'COMPLETED'
+            });
+          }
+        });
+        resData = { totalParsed: txs.length, transactions: txs };
+      }
+
+      parsedStatementCache = resData.transactions || [];
+      const previewContainer = document.getElementById('statement-preview-container');
+      if (!previewContainer) return;
+
+      if (parsedStatementCache.length === 0) {
+        previewContainer.classList.remove('hidden');
+        previewContainer.innerHTML = `<p class="text-xs text-rose-500 font-medium">Could not extract valid monetary entries. Please verify the format.</p>`;
+        return;
+      }
+
+      previewContainer.classList.remove('hidden');
+      previewContainer.innerHTML = `
+        <div class="flex items-center justify-between bg-emerald-50 dark:bg-emerald-950/40 p-3 rounded-xl border border-emerald-200 dark:border-emerald-800">
+          <span class="text-xs font-bold text-emerald-800 dark:text-emerald-300">
+            ✅ Successfully detected ${parsedStatementCache.length} transactions!
+          </span>
+          <button onclick="commitParsedStatementToLedger()" class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md shadow-emerald-500/20 active:scale-95 transition-all">
+            Confirm & Log All to Ledger
+          </button>
+        </div>
+
+        <div class="max-h-60 overflow-y-auto rounded-xl border border-slate-200 dark:border-slate-700">
+          <table class="w-full text-left text-xs">
+            <thead class="bg-slate-100 dark:bg-slate-800 text-slate-500 text-[11px] font-semibold">
+              <tr>
+                <th class="p-2.5">Date</th>
+                <th class="p-2.5">Description</th>
+                <th class="p-2.5">Category</th>
+                <th class="p-2.5">Type</th>
+                <th class="p-2.5 text-right">Amount</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+              ${parsedStatementCache.map(t => `
+                <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                  <td class="p-2.5 font-mono text-[11px]">${t.date}</td>
+                  <td class="p-2.5 font-medium text-slate-900 dark:text-white truncate max-w-xs">${t.description}</td>
+                  <td class="p-2.5"><span class="px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 text-[10px] font-medium">${t.category}</span></td>
+                  <td class="p-2.5"><span class="px-2 py-0.5 rounded font-bold text-[10px] ${t.transactionType === 'INCOME' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}">${t.transactionType}</span></td>
+                  <td class="p-2.5 text-right font-bold ${t.transactionType === 'INCOME' ? 'text-emerald-600' : 'text-slate-800 dark:text-slate-200'}">₹${formatINR(t.amount)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      `;
+      lucide.createIcons();
+    }
+
+    function commitParsedStatementToLedger() {
+      if (!parsedStatementCache || parsedStatementCache.length === 0) return;
+
+      const bankAcc = appState.accounts.find(a => a.type === 'BANK') || appState.accounts[0];
+      const accId = bankAcc ? bankAcc.id : 'acc_bank';
+
+      parsedStatementCache.forEach(t => {
+        appState.transactions.unshift({
+          ...t,
+          sourceAccountId: t.transactionType === 'EXPENSE' ? accId : undefined,
+          destinationAccountId: t.transactionType === 'INCOME' ? accId : undefined
+        });
+      });
+
+      saveState();
+      recalculateAllLedgerBalances();
+      debounceSyncToCloud();
+      closeModal();
+      showToast(`Imported ${parsedStatementCache.length} transactions directly into ledger!`, 'success');
+      navigateTo('transactions');
+    }
+
+    // =========================================================================
+    // SAAS SUITE: 3. GROUP EXPENSE SPLIT (SPLITWISE MODULE)
+    // =========================================================================
+    function getSampleGroups() {
+      return [
+        {
+          id: 'grp_flat_402',
+          name: 'Flat 402 Roommates',
+          description: 'Electricity, Cook, Groceries & Wi-Fi',
+          members: ['You', 'Amit Sharma', 'Rohan Verma', 'Kunal'],
+          expenses: [
+            { id: 'e1', description: 'Monthly Cook Salary', amount: 4000, paidBy: 'You', date: '2026-10-01' },
+            { id: 'e2', description: 'ACT Fiber Broadband', amount: 1200, paidBy: 'Amit Sharma', date: '2026-10-05' },
+            { id: 'e3', description: 'Weekly Blinkit Groceries', amount: 1600, paidBy: 'Rohan Verma', date: '2026-10-18' }
+          ]
+        },
+        {
+          id: 'grp_goa_2026',
+          name: 'Goa Reunion Trip 2026',
+          description: 'Villa Booking, Self-Drive Cars & Dining',
+          members: ['You', 'Priya Roy', 'Rahul Soni', 'Ananya'],
+          expenses: [
+            { id: 'e4', description: 'Candolim Beach Villa Advance', amount: 18000, paidBy: 'You', date: '2026-10-12' },
+            { id: 'e5', description: 'Thalassa Dinner & Drinks', amount: 6400, paidBy: 'Priya Roy', date: '2026-10-14' }
+          ]
+        }
+      ];
+    }
+
+    function renderGroupSplitView(container) {
+      if (!appState.groups || !Array.isArray(appState.groups) || appState.groups.length === 0) {
+        appState.groups = getSampleGroups();
+        saveState();
+      }
+
+      container.innerHTML = `
+        <div class="space-y-6">
+          <!-- Banner -->
+          <div class="p-6 rounded-3xl bg-gradient-to-r from-purple-900 via-indigo-900 to-slate-900 text-white shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+            <div>
+              <div class="flex items-center space-x-2">
+                <span class="px-2.5 py-0.5 rounded-full bg-purple-500/20 text-purple-300 text-xs font-bold border border-purple-400/30">
+                  Splitwise SaaS Feature
+                </span>
+                <span class="text-xs text-purple-300 font-medium">Automatic Debt Settlement Matrix</span>
+              </div>
+              <h2 class="text-xl font-black tracking-tight mt-1">Group Expense Split & Shared Bills</h2>
+              <p class="text-xs text-purple-200 mt-1 max-w-xl">
+                Split trips, apartment rent, dinners & team lunches equally. No more spreadsheets or awkward math.
+              </p>
+            </div>
+            <button onclick="openCreateGroupModal()" class="px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs shadow-lg shadow-purple-600/30 flex items-center space-x-2 active:scale-95 transition-all">
+              <i data-lucide="plus-circle" class="w-4 h-4"></i>
+              <span>Create New Group</span>
+            </button>
+          </div>
+
+          <!-- Groups Cards Grid -->
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            ${appState.groups.map(grp => {
+              const totalSpent = (grp.expenses || []).reduce((acc, e) => acc + e.amount, 0);
+              const perPerson = grp.members.length > 0 ? totalSpent / grp.members.length : 0;
+              const myPaid = (grp.expenses || []).filter(e => e.paidBy === 'You').reduce((acc, e) => acc + e.amount, 0);
+              const myNetBalance = myPaid - perPerson;
+
+              return `
+                <div class="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm p-6 space-y-5">
+                  <div class="flex items-start justify-between">
+                    <div>
+                      <h3 class="text-base font-bold text-slate-900 dark:text-white flex items-center space-x-2">
+                        <i data-lucide="users" class="w-4 h-4 text-purple-600"></i>
+                        <span>${grp.name}</span>
+                      </h3>
+                      <p class="text-xs text-slate-400 mt-0.5">${grp.description || 'Shared expenses'}</p>
+                    </div>
+                    <button onclick="openAddGroupExpenseModal('${grp.id}')" class="px-3 py-1.5 rounded-xl bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800 font-bold text-xs hover:bg-purple-100 flex items-center space-x-1">
+                      <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+                      <span>Add Bill</span>
+                    </button>
+                  </div>
+
+                  <!-- Metrics bar -->
+                  <div class="grid grid-cols-3 gap-3 p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/60 dark:border-slate-700/60 text-center text-xs">
+                    <div>
+                      <p class="text-[10px] text-slate-400 uppercase font-semibold">Total Spent</p>
+                      <p class="font-extrabold text-slate-900 dark:text-white text-sm mt-0.5">₹${formatINR(totalSpent)}</p>
+                    </div>
+                    <div>
+                      <p class="text-[10px] text-slate-400 uppercase font-semibold">Fair Share / Person</p>
+                      <p class="font-bold text-slate-700 dark:text-slate-300 text-sm mt-0.5">₹${formatINR(Math.round(perPerson))}</p>
+                    </div>
+                    <div>
+                      <p class="text-[10px] text-slate-400 uppercase font-semibold">Your Standing</p>
+                      <p class="font-extrabold text-sm mt-0.5 ${myNetBalance >= 0 ? 'text-emerald-600' : 'text-rose-600'}">
+                        ${myNetBalance >= 0 ? `+₹${formatINR(Math.round(myNetBalance))}` : `-₹${formatINR(Math.round(Math.abs(myNetBalance)))}`}
+                      </p>
+                    </div>
+                  </div>
+
+                  <!-- Members chips -->
+                  <div>
+                    <span class="text-[11px] font-semibold text-slate-400 block mb-1.5">Group Members (${grp.members.length}):</span>
+                    <div class="flex flex-wrap gap-1.5">
+                      ${grp.members.map(m => `
+                        <span class="px-2.5 py-1 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-medium flex items-center space-x-1">
+                          <i data-lucide="user" class="w-3 h-3 text-slate-400"></i>
+                          <span>${m}</span>
+                        </span>
+                      `).join('')}
+                    </div>
+                  </div>
+
+                  <!-- Expenses list -->
+                  <div>
+                    <span class="text-[11px] font-semibold text-slate-400 block mb-2">Recent Bills (${(grp.expenses || []).length}):</span>
+                    <div class="space-y-2 max-h-48 overflow-y-auto">
+                      ${(grp.expenses || []).map(exp => `
+                        <div class="flex items-center justify-between p-2.5 rounded-xl bg-slate-50/80 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 text-xs">
+                          <div>
+                            <p class="font-bold text-slate-800 dark:text-slate-200">${exp.description}</p>
+                            <p class="text-[10px] text-slate-400">Paid by <strong>${exp.paidBy}</strong> on ${exp.date}</p>
+                          </div>
+                          <span class="font-black text-slate-900 dark:text-white">₹${formatINR(exp.amount)}</span>
+                        </div>
+                      `).join('')}
+                    </div>
+                  </div>
+
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+      `;
+      lucide.createIcons();
+    }
+
+    function openCreateGroupModal() {
+      const container = document.getElementById('modal-container');
+      container.innerHTML = `
+        <div class="fixed inset-0 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fadeIn" onclick="if(event.target === this) closeModal()">
+          <div class="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-2xl max-w-md w-full p-6 space-y-4" onclick="event.stopPropagation()">
+            <div class="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+              <h3 class="font-bold text-base text-slate-900 dark:text-white flex items-center space-x-2">
+                <i data-lucide="users" class="w-4 h-4 text-purple-600"></i>
+                <span>Create Shared Bill Group</span>
+              </h3>
+              <button onclick="closeModal()" class="p-1 text-slate-400 hover:text-slate-600"><i data-lucide="x" class="w-5 h-5"></i></button>
+            </div>
+
+            <form onsubmit="handleCreateGroup(event)" class="space-y-3.5 text-xs">
+              <div>
+                <label class="block text-slate-400 font-semibold mb-1">Group Name</label>
+                <input type="text" id="grp-name" required placeholder="e.g. Manali Trip, Flat Rent, Office Lunch" class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-medium" />
+              </div>
+              <div>
+                <label class="block text-slate-400 font-semibold mb-1">Short Description / Purpose</label>
+                <input type="text" id="grp-desc" placeholder="e.g. Shared grocery & rent bills" class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-medium" />
+              </div>
+              <div>
+                <label class="block text-slate-400 font-semibold mb-1">Members (comma separated names)</label>
+                <input type="text" id="grp-members" required value="You, Rahul, Amit" placeholder="You, Rahul, Amit, Priya" class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-medium" />
+                <p class="text-[10px] text-slate-400 mt-1">Keep 'You' to include yourself in the split.</p>
+              </div>
+
+              <div class="flex justify-end space-x-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+                <button type="button" onclick="closeModal()" class="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 font-semibold">Cancel</button>
+                <button type="submit" class="px-5 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-bold shadow-md shadow-purple-600/20">Create Group</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      `;
+      lucide.createIcons();
+    }
+
+    function handleCreateGroup(e) {
+      e.preventDefault();
+      const name = document.getElementById('grp-name').value.trim();
+      const desc = document.getElementById('grp-desc').value.trim();
+      const rawMembers = document.getElementById('grp-members').value;
+      const members = rawMembers.split(',').map(m => m.trim()).filter(Boolean);
+
+      const newGrp = {
+        id: `grp_${Date.now()}`,
+        name,
+        description: desc,
+        members: members.length > 0 ? members : ['You'],
+        expenses: []
+      };
+
+      if (!appState.groups) appState.groups = [];
+      appState.groups.unshift(newGrp);
+      saveState();
+      debounceSyncToCloud();
+      closeModal();
+      showToast(`Group '${name}' created successfully!`, 'success');
+      navigateTo('group-split');
+    }
+
+    function openAddGroupExpenseModal(groupId) {
+      const grp = appState.groups.find(g => g.id === groupId);
+      if (!grp) return;
+
+      const container = document.getElementById('modal-container');
+      container.innerHTML = `
+        <div class="fixed inset-0 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fadeIn" onclick="if(event.target === this) closeModal()">
+          <div class="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-2xl max-w-md w-full p-6 space-y-4" onclick="event.stopPropagation()">
+            <div class="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+              <h3 class="font-bold text-base text-slate-900 dark:text-white flex items-center space-x-2">
+                <i data-lucide="receipt" class="w-4 h-4 text-purple-600"></i>
+                <span>Add Bill to ${grp.name}</span>
+              </h3>
+              <button onclick="closeModal()" class="p-1 text-slate-400 hover:text-slate-600"><i data-lucide="x" class="w-5 h-5"></i></button>
+            </div>
+
+            <form onsubmit="handleAddGroupExpense(event, '${groupId}')" class="space-y-3.5 text-xs">
+              <div>
+                <label class="block text-slate-400 font-semibold mb-1">Bill Description</label>
+                <input type="text" id="gexp-desc" required placeholder="e.g. Swiggy Dinner, Villa Booking, Fuel" class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-medium" />
+              </div>
+              <div>
+                <label class="block text-slate-400 font-semibold mb-1">Total Amount (₹)</label>
+                <input type="number" step="0.01" id="gexp-amt" required placeholder="e.g. 1850" class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-medium text-sm font-bold" />
+              </div>
+              <div>
+                <label class="block text-slate-400 font-semibold mb-1">Paid By</label>
+                <select id="gexp-paidby" class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white font-medium">
+                  ${grp.members.map(m => `<option value="${m}">${m}</option>`).join('')}
+                </select>
+              </div>
+
+              <div class="flex justify-end space-x-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+                <button type="button" onclick="closeModal()" class="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 font-semibold">Cancel</button>
+                <button type="submit" class="px-5 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-bold shadow-md shadow-purple-600/20">Log Group Bill</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      `;
+      lucide.createIcons();
+    }
+
+    function handleAddGroupExpense(e, groupId) {
+      e.preventDefault();
+      const grp = appState.groups.find(g => g.id === groupId);
+      if (!grp) return;
+
+      const desc = document.getElementById('gexp-desc').value.trim();
+      const amt = parseFloat(document.getElementById('gexp-amt').value);
+      const paidBy = document.getElementById('gexp-paidby').value;
+
+      if (!grp.expenses) grp.expenses = [];
+      grp.expenses.unshift({
+        id: `gexp_${Date.now()}`,
+        description: desc,
+        amount: amt,
+        paidBy,
+        date: new Date().toISOString().split('T')[0]
+      });
+
+      saveState();
+      debounceSyncToCloud();
+      closeModal();
+      showToast(`Logged ₹${formatINR(amt)} bill to ${grp.name}!`, 'success');
+      navigateTo('group-split');
     }
 
     // Boot

@@ -73,10 +73,18 @@ function get(urlPath, headers = {}) {
   });
 }
 
+const server = require('./server');
+
 async function runTestSuite() {
   console.log('\n======================================================');
   console.log('   🧪 Running HisabX UPI Webhook Test Suite');
   console.log('======================================================\n');
+
+  let serverStartedLocally = false;
+  if (!server.listening) {
+    await new Promise(r => server.listen(3000, r));
+    serverStartedLocally = true;
+  }
 
   let passed = 0;
   let total = 0;
@@ -189,6 +197,10 @@ async function runTestSuite() {
   console.log('\n======================================================');
   console.log(`   🏁 Results: ${passed}/${total} Tests Passed`);
   console.log('======================================================\n');
+
+  if (serverStartedLocally) {
+    server.close();
+  }
 
   if (passed !== total) {
     process.exit(1);

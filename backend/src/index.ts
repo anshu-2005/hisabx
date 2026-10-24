@@ -21,15 +21,10 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-app.post('/api/transactions/parse-smart-entry', (req, res) => {
-  const { input } = req.body;
-  if (!input || typeof input !== 'string') {
-    return res.status(400).json({ error: 'Text input string is required' });
-  }
+import apiRouter from './routes';
 
-  const preview = SmartTransactionParser.parse(input);
-  return res.json(preview);
-});
+app.use('/api', apiRouter);
+app.use('/api/v1', apiRouter);
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Endpoint not found' });

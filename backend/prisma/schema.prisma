@@ -86,9 +86,12 @@ model User {
   debts                 Debt[]
   debtRepayments        DebtRepayment[]
   budgets               Budget[]
-  recurringTransactions RecurringTransaction[]
   reminders             Reminder[]
   auditLogs             AuditLog[]
+  subscriptions         Subscription[]
+  ownedGroups           Group[]                @relation("GroupOwner")
+  groupMemberships      GroupMember[]
+  groupExpensesPaid     GroupExpense[]
 
   @@map("users")
 }
@@ -345,3 +348,73 @@ model AuditLog {
   @@index([userId, entityType, entityId])
   @@map("audit_logs")
 }
+
+model Subscription {
+  id                    String    @id @default(uuid())
+  userId                String
+  plan                  String    @default("free") // "free", "pro", "enterprise"
+  status                String    @default("active") // "active", "cancelled", "past_due"
+  stripeCustomerId      String?
+  stripeSubscriptionId  String?
+  razorpaySubscriptionId String?
+  paymentId             String?
+  currentPeriodStart    DateTime  @default(now())
+  currentPeriodEnd      DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@map("subscriptions")
+}
+
+model Group {
+  id          String        @id @default(uuid())
+  ownerId     String
+  name        String
+  description String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  owner       User          @relation("GroupOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  members     GroupMember[]
+  expenses    GroupExpense[]
+
+  @@index([ownerId])
+  @@map("groups")
+}
+
+model GroupMember {
+  id        String   @id @default(uuid())
+  groupId   String
+  userId    String?
+  name      String
+  email     String?
+  joinedAt  DateTime @default(now())
+
+  group     Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@unique([groupId, name])
+  @@map("group_members")
+}
+
+model GroupExpense {
+  id          String   @id @default(uuid())
+  groupId     String
+  paidById    String
+  description String
+  amount      Decimal  @db.Decimal(14, 2)
+  splitType   String   @default("EQUAL") // "EQUAL", "PERCENTAGE", "EXACT"
+  shares      Json?
+  date        DateTime @db.Date
+  createdAt   DateTime @default(now())
+
+  group       Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  paidBy      User     @relation(fields: [paidById], references: [id], onDelete: Restrict)
+
+  @@index([groupId, date])
+  @@map("group_expenses")
+}
+

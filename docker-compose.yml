@@ -1,0 +1,67 @@
+version: '3.8'
+
+services:
+  hisabx-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hisabx_saas_app
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DATABASE_URL=postgresql://hisabx_user:hisabx_secure_pass_2026@postgres:5432/hisabx_production?schema=public
+      - JWT_SECRET=hisabx_ultra_secure_jwt_secret_32_characters_long_key_2026!
+      - REDIS_URL=redis://redis:6379
+      - UPI_WEBHOOK_SECRET=whsec_production_secret_key_849281
+    volumes:
+      - hisabx_data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - hisabx_network
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: hisabx_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: hisabx_user
+      POSTGRES_PASSWORD: hisabx_secure_pass_2026
+      POSTGRES_DB: hisabx_production
+    ports:
+      - "5432:5432"
+    volumes:
+      - hisabx_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hisabx_user -d hisabx_production"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - hisabx_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: hisabx_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - hisabx_redisdata:/data
+    networks:
+      - hisabx_network
+
+volumes:
+  hisabx_data:
+  hisabx_pgdata:
+  hisabx_redisdata:
+
+networks:
+  hisabx_network:
+    driver: bridge

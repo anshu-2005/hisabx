@@ -16,8 +16,10 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const DATA_DIR = path.join(__dirname, 'data');
+const IS_VERCEL = Boolean(process.env.VERCEL);
+const DATA_DIR = IS_VERCEL ? path.join('/tmp', 'hisabx_data') : path.join(__dirname, 'data');
 const DB_FILE = path.join(DATA_DIR, 'hisabx_persistent_db.json');
+const INITIAL_SEED_FILE = path.join(__dirname, 'data', 'hisabx_persistent_db.json');
 
 // Ensure data directory exists
 if (!fs.existsSync(DATA_DIR)) {
@@ -42,6 +44,8 @@ class LocalDatabaseStore {
       reminders: [],
       dailyNotes: {}, // keyed by `${userId}:${dateStr}`
       monthlyNotes: [],
+      groups: [],
+      subscriptions: {}, // keyed by userId
       lastUpdated: new Date().toISOString()
     };
     this.load();
@@ -49,6 +53,12 @@ class LocalDatabaseStore {
 
   load() {
     try {
+      if (IS_VERCEL && !fs.existsSync(DB_FILE) && fs.existsSync(INITIAL_SEED_FILE)) {
+        try {
+          fs.copyFileSync(INITIAL_SEED_FILE, DB_FILE);
+        } catch (e) {}
+      }
+
       if (fs.existsSync(DB_FILE)) {
         const raw = fs.readFileSync(DB_FILE, 'utf8');
         const parsed = JSON.parse(raw);
@@ -64,6 +74,8 @@ class LocalDatabaseStore {
             reminders: Array.isArray(parsed.reminders) ? parsed.reminders : [],
             dailyNotes: parsed.dailyNotes && typeof parsed.dailyNotes === 'object' ? parsed.dailyNotes : {},
             monthlyNotes: Array.isArray(parsed.monthlyNotes) ? parsed.monthlyNotes : [],
+            groups: Array.isArray(parsed.groups) ? parsed.groups : [],
+            subscriptions: parsed.subscriptions && typeof parsed.subscriptions === 'object' ? parsed.subscriptions : {},
             lastUpdated: parsed.lastUpdated || new Date().toISOString()
           };
         }
@@ -436,6 +448,97 @@ class LocalDatabaseStore {
 
     this.save();
     return { importedTransactions: importedTxCount };
+  }
+
+  // --- SAAS SUBSCRIPTION OPERATIONS ---
+  getSubscription(userId) {
+    if (!userId) return { plan: 'free', status: 'active', features: ['basic_ledger', 'calendar', 'manual_import'] };
+    const sub = this.data.subscriptions[userId];
+    if (!sub) {
+      return {
+        userId,
+        plan: 'free',
+        status: 'active',
+        name: 'Starter Plan',
+        price: '₹0',
+        maxAccounts: 3,
+        autoSyncEnabled: true,
+        statementParserEnabled: true,
+        expiresAt: null
+      };
+    }
+    return sub;
+  }
+
+  updateSubscription(userId, { plan = 'pro', durationMonths = 12, paymentId = 'pay_demo_success' }) {
+    if (!userId) return null;
+    const expiresAt = new Date();
+    expiresAt.setMonth(expiresAt.getMonth() + durationMonths);
+
+    const sub = {
+      userId,
+      plan,
+      status: 'active',
+      name: plan === 'pro' ? 'Pro Financial OS' : 'Enterprise Suite',
+      price: plan === 'pro' ? '₹1,499/year' : '₹4,999/year',
+      maxAccounts: 999,
+      autoSyncEnabled: true,
+      statementParserEnabled: true,
+      groupSplitEnabled: true,
+      prioritySupport: true,
+      paymentId,
+      updatedAt: new Date().toISOString(),
+      expiresAt: expiresAt.toISOString()
+    };
+
+    this.data.subscriptions[userId] = sub;
+    this.save();
+    return sub;
+  }
+
+  // --- GROUP EXPENSE (SPLITWISE) OPERATIONS ---
+  getGroups(userId) {
+    if (!userId) return [];
+    return this.data.groups.filter(g => g.userId === userId || (g.members && g.members.some(m => m.email === userId)));
+  }
+
+  createGroup(userId, { name, description = '', members = [] }) {
+    if (!userId || !name) throw new Error('User ID and group name are required');
+    const newGroup = {
+      id: `grp_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+      userId,
+      name: name.trim(),
+      description: description.trim(),
+      members: Array.isArray(members) ? members : [],
+      expenses: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    this.data.groups.unshift(newGroup);
+    this.save();
+    return newGroup;
+  }
+
+  addGroupExpense(userId, groupId, { description, amount, paidBy, splitType = 'EQUAL', shares = [] }) {
+    const group = this.data.groups.find(g => g.id === groupId);
+    if (!group) throw new Error('Group not found');
+
+    const expense = {
+      id: `gexp_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+      description: description.trim(),
+      amount: parseFloat(amount),
+      paidBy: paidBy.trim(),
+      splitType,
+      shares: Array.isArray(shares) ? shares : [],
+      date: new Date().toISOString().split('T')[0],
+      createdAt: new Date().toISOString()
+    };
+
+    if (!group.expenses) group.expenses = [];
+    group.expenses.unshift(expense);
+    group.updatedAt = new Date().toISOString();
+    this.save();
+    return expense;
   }
 }
 
